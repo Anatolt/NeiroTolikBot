@@ -17,6 +17,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 PIAPI_KEY = os.getenv("PIAPI_KEY")  # Add PIAPI key
+CUSTOM_SYSTEM_PROMPT = os.getenv("CUSTOM_SYSTEM_PROMPT", "You are a helpful assistant.") # Load custom prompt
 DEFAULT_MODEL = "anthropic/claude-3-haiku"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 BOT_REFERER = "https://t.me/NeiroTolikBot"
@@ -42,12 +43,15 @@ logger = logging.getLogger(__name__)
 # --- Placeholder Functions ---
 async def generate_text(prompt: str, model: str) -> str:
     """Generate text using OpenRouter API."""
+    messages = []
+    if CUSTOM_SYSTEM_PROMPT: # Only add if the prompt is set and not empty
+        messages.append({"role": "system", "content": CUSTOM_SYSTEM_PROMPT})
+    messages.append({"role": "user", "content": prompt})
+
     try:
         response = await client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "user", "content": prompt} # Send only the user prompt
-            ],
+            messages=messages, # Use the constructed messages list
             max_tokens=1000, # Reverted max_tokens
             temperature=0.7
         )
