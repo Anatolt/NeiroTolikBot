@@ -43,12 +43,12 @@ logger = logging.getLogger(__name__)
 async def generate_text(prompt: str, model: str) -> str:
     """Generate text using OpenRouter API."""
     try:
-        response = await client.chat.completions.create(  # Теперь await будет работать
+        response = await client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt} # Send only the user prompt
             ],
-            max_tokens=1000,
+            max_tokens=1000, # Reverted max_tokens
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
@@ -332,29 +332,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Route the request using the text *after* removing the mention (if any)
     service_type, clean_prompt, model_name = await route_request(effective_text, bot_username if is_mentioned else None)
 
-    if not clean_prompt and service_type != "capabilities":  # Изменим проверку
+    if not clean_prompt and service_type != "capabilities":  # Check added to handle empty prompt correctly
         await update.message.reply_text("Пожалуйста, укажите ваш запрос после упоминания или ключевого слова.")
         return
 
     # Call the appropriate function based on routing
     try:
         if service_type == "capabilities":
-            # clean_prompt теперь содержит список сообщений
+            # clean_prompt now contains a list of messages
             for message_part in clean_prompt:
+                # Assuming capabilities text is already formatted/escaped if needed
                 await update.message.reply_text(message_part)
         elif service_type == "image":
             await update.message.reply_text("🎨 Генерирую изображение, это может занять некоторое время...")
             image_url = await generate_image(clean_prompt)
             if image_url.startswith("http"):
-                await update.message.reply_photo(image_url, caption=f"🖼 Ваше изображение по запросу: {clean_prompt}")
+                logger.info(f"Bot image response (PiAPI): {image_url}")
+                # Escape the prompt for the caption using MarkdownV2
+                escaped_prompt = escape_markdown_v2(clean_prompt)
+                caption = f"🖼 Изображение по запросу: {escaped_prompt}\n\\(Сгенерировано с помощью PiAPI\\.ai\\)"
+                await update.message.reply_photo(image_url, caption=caption, parse_mode='MarkdownV2')
             else:
-                await update.message.reply_text(image_url)  # This will be the error message
+                logger.info(f"Bot image error response (PiAPI): {image_url}")
+                # Keep error message reply as plain text
+                await update.message.reply_text(f"Ошибка генерации изображения: {image_url}")
         elif service_type == "text" and model_name:
             response_text = await generate_text(clean_prompt, model_name)
-            await update.message.reply_text(response_text)
+            logger.info(f"Bot response ({model_name}): {response_text}")
+            # Escape model name and response for MarkdownV2
+            escaped_model_name = escape_markdown_v2(model_name)
+            escaped_response_text = escape_markdown_v2(response_text)
+            await update.message.reply_markdown_v2(f"Ответ от `{escaped_model_name}`:\n\n{escaped_response_text}")
     except Exception as e:
         logger.error(f"Error handling message: {e}", exc_info=True)
-        await update.message.reply_text("Извините, произошла ошибка при обработке вашего запроса.")
+        # Escape the error message for safety, though it might not be markdown formatted
+        error_message_escaped = escape_markdown_v2(str(e))
+        await update.message.reply_markdown_v2(f"Извините, произошла ошибка при обработке вашего запроса\\.\n`{error_message_escaped}`")
 
 
 async def post_init(application: Application) -> None:
