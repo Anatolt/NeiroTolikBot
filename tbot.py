@@ -7,6 +7,8 @@ from openai import AsyncOpenAI
 import json
 from typing import Optional
 from dotenv import load_dotenv
+import aiohttp
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -14,6 +16,7 @@ load_dotenv()
 # Bot Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+PIAPI_KEY = os.getenv("PIAPI_KEY")  # Add PIAPI key
 DEFAULT_MODEL = "anthropic/claude-3-haiku"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 BOT_REFERER = "https://t.me/NeiroTolikBot"
@@ -54,18 +57,101 @@ async def generate_text(prompt: str, model: str) -> str:
         return f"Произошла ошибка при генерации текста: {str(e)}"
 
 async def generate_image(prompt: str) -> str:
-    """Generate image using OpenRouter's Qwen model."""
+    """Generate image using PiAPI.ai."""
+    if not PIAPI_KEY:
+        logger.error("PIAPI_KEY environment variable is not set.")
+        return "Ошибка конфигурации: Ключ API для генерации изображений не найден."
+
     try:
-        response = await client.images.generate(
-            model="qwen/qwen2.5-vl-3b-instruct:free",
-            prompt=prompt,
-            n=1,
-            size="1024x1024"
-        )
-        return response.data[0].url
+        url = "https://api.piapi.ai/api/v1/task" # New PiAPI.ai URL
+        headers = {
+            "X-API-Key": PIAPI_KEY,             # Correct header name
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": "Qubico/flux1-schnell",     # Example model from PiAPI.ai docs
+            "task_type": "txt2img",
+            "input": {
+                "prompt": prompt,
+                "negative_prompt": "ugly, blurry, bad quality, distorted", # Keep negative prompt
+                # Add other relevant params if needed from PiAPI.ai docs
+                "aspect_ratio": "square" # Keep aspect ratio if supported
+            }
+        }
+
+        async with aiohttp.ClientSession() as session:
+            # 1. Start generation task
+            logger.info(f"Sending image generation request to PiAPI.ai for prompt: {prompt}")
+            async with session.post(url, headers=headers, data=json.dumps(payload)) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"PiAPI.ai Error Response: {error_text} (Status: {response.status})")
+                    raise Exception(f"Failed to start PiAPI.ai image generation: {error_text}")
+
+                task_data = await response.json()
+                # Correctly extract task_id from the nested 'data' dictionary
+                data_dict = task_data.get("data")
+                task_id = data_dict.get("task_id") if data_dict else None
+
+                if not task_id:
+                    logger.error(f"No task_id received from PiAPI.ai: {task_data}")
+                    raise Exception("No task_id received from PiAPI.ai")
+
+                logger.info(f"Started PiAPI.ai image generation task: {task_id}")
+
+            # 2. Poll for task completion
+            max_attempts = 60  # Increase polling time slightly if needed (60 seconds)
+            attempts = 0
+            status_check_url = f"{url}/{task_id}" # URL for checking status (assuming GET to the same endpoint + /task_id)
+
+            while attempts < max_attempts:
+                await asyncio.sleep(2) # Wait 2 seconds between checks
+                logger.info(f"Checking status for task {task_id} (Attempt {attempts + 1}/{max_attempts})")
+                async with session.get(status_check_url, headers=headers) as response: # Use GET for status
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Status check failed for task {task_id}: {error_text} (Status: {response.status})")
+                        # Don't raise immediately, maybe a temporary issue
+                        attempts += 1
+                        continue # Try again
+
+                    status_data = await response.json()
+                    # Correctly extract status from the nested 'data' dictionary
+                    data_dict = status_data.get("data", {})
+                    task_status = data_dict.get("status")
+                    logger.info(f"Task {task_id} status: {task_status}")
+
+                    if task_status == "completed":
+                        # Extract result URL from data['output']['image_url']
+                        output_dict = data_dict.get("output", {})
+                        image_url = output_dict.get("image_url")
+                        if image_url:
+                            logger.info(f"Image generation successful for task {task_id}: {image_url}")
+                            return image_url
+                        else:
+                            logger.error(f"Completed task {task_id} but no result URL found: {status_data}")
+                            raise Exception("No image URL in successful PiAPI.ai response")
+                    elif task_status == "failed":
+                        # Extract error details, potentially also nested
+                        error_details = data_dict.get("error", {}).get("message", "Unknown error")
+                        logger.error(f"Image generation failed for task {task_id}: {error_details}")
+                        raise Exception(f"PiAPI.ai image generation failed: {error_details}")
+                    elif task_status in ["processing", "pending"]:
+                         # Continue polling
+                         pass
+                    else:
+                        logger.warning(f"Unknown task status for {task_id}: {task_status}")
+                        # Decide how to handle unknown statuses, maybe continue polling for a bit
+
+                    attempts += 1
+
+            logger.error(f"Image generation timed out for task {task_id}")
+            raise Exception("Image generation timed out with PiAPI.ai")
+
     except Exception as e:
-        logger.error(f"Error generating image: {str(e)}")
-        return f"Произошла ошибка при генерации изображения: {str(e)}"
+        logger.error(f"Error generating image with PiAPI.ai: {str(e)}", exc_info=True)
+        return f"Произошла ошибка при генерации изображения через PiAPI.ai: {str(e)}"
 
 # Добавим новую функцию для получения возможностей
 async def get_capabilities() -> str:
@@ -257,8 +343,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             for message_part in clean_prompt:
                 await update.message.reply_text(message_part)
         elif service_type == "image":
-            response_text = await generate_image(clean_prompt)
-            await update.message.reply_text(response_text)
+            await update.message.reply_text("🎨 Генерирую изображение, это может занять некоторое время...")
+            image_url = await generate_image(clean_prompt)
+            if image_url.startswith("http"):
+                await update.message.reply_photo(image_url, caption=f"🖼 Ваше изображение по запросу: {clean_prompt}")
+            else:
+                await update.message.reply_text(image_url)  # This will be the error message
         elif service_type == "text" and model_name:
             response_text = await generate_text(clean_prompt, model_name)
             await update.message.reply_text(response_text)
