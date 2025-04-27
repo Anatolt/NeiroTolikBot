@@ -88,4 +88,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
-        logger.error(f"Error running bot: {str(e)}") 
+        logger.error(f"Error running bot: {str(e)}")

@@ -38,7 +38,11 @@ async def get_capabilities() -> str:
         instructions += "• Или в конце ('расскажи о погоде через claude')\n"
         instructions += "• Для картинок используй 'нарисуй' или 'сгенерируй картинку'"
         
-        capabilities.append(instructions)
+        if len(current_part + instructions) > 3000:
+            capabilities.append(instructions)
+        else:
+            capabilities[-1] += instructions
+        
         return capabilities
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")
@@ -162,4 +166,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await message.reply_text(f"Ответ от {model_name}:\n\n{response}")
     else:
         logger.warning(f"Unknown request type: {request_type}")
-        await message.reply_text("Извините, не удалось обработать ваш запрос.") 
+        await message.reply_text("Извините, не удалось обработать ваш запрос.")

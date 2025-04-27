@@ -9,11 +9,22 @@ __pycache__/
 # Virtual Environment
 .venv/
 venv/
-env/
 ENV/
 
 # IDE
 .vscode/
 .idea/
 *.swp
-*.swo 
+*.swo
+
+# Database
+memory.db
+data/memory.db
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log

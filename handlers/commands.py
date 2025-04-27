@@ -161,4 +161,4 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Models list sent successfully")
     except Exception as e:
         logger.error(f"Error fetching models list: {str(e)}")
-        await update.message.reply_text("Не удалось получить список моделей. Пожалуйста, попробуйте позже.") 
+        await update.message.reply_text("Не удалось получить список моделей. Пожалуйста, попробуйте позже.")
