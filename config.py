@@ -11,7 +11,7 @@ BOT_CONFIG = {
     
     # API Settings
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-    "DEFAULT_MODEL": "qwen/qwen2.5-vl-3b-instruct:free",  # Полный идентификатор модели
+    "DEFAULT_MODEL": "anthropic/claude-3-haiku",  # Изменено на Claude
     "CUSTOM_SYSTEM_PROMPT": None,  # Will be loaded from .env
     
     # Image Generation Settings

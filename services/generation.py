@@ -14,19 +14,46 @@ client = None
 def init_client():
     """Инициализация клиента OpenRouter после загрузки конфигурации."""
     global client
-    client = AsyncOpenAI(
-        api_key=BOT_CONFIG["OPENROUTER_API_KEY"],
-        base_url=BOT_CONFIG["OPENROUTER_BASE_URL"],
-        default_headers={
-            "HTTP-Referer": BOT_CONFIG["BOT_REFERER"],
-            "X-Title": BOT_CONFIG["BOT_TITLE"]
-        }
-    )
+    if client is None:
+        logger.info("Initializing OpenRouter client")
+        client = AsyncOpenAI(
+            api_key=BOT_CONFIG["OPENROUTER_API_KEY"],
+            base_url=BOT_CONFIG["OPENROUTER_BASE_URL"],
+            default_headers={
+                "HTTP-Referer": BOT_CONFIG["BOT_REFERER"],
+                "X-Title": BOT_CONFIG["BOT_TITLE"]
+            }
+        )
+        logger.info("OpenRouter client initialized successfully")
+    return client
+
+async def check_model_availability(model: str) -> bool:
+    """Проверка доступности модели в OpenRouter API."""
+    try:
+        client = init_client()
+        logger.info(f"Checking availability of model: {model}")
+        response = await client.models.list()
+        
+        if not response or not hasattr(response, 'data'):
+            logger.error("Failed to get models list from OpenRouter API")
+            return False
+            
+        # Проверяем наличие модели в списке
+        for available_model in response.data:
+            model_data = available_model if isinstance(available_model, dict) else available_model.model_dump()
+            if model_data.get('id') == model:
+                logger.info(f"Model {model} is available")
+                return True
+                
+        logger.error(f"Model {model} is not available in OpenRouter API")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking model availability: {str(e)}")
+        return False
 
 async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: str = None) -> str:
     """Генерация текста с помощью OpenRouter API."""
-    if client is None:
-        init_client()
+    client = init_client()
     
     messages = []
     
@@ -55,13 +82,31 @@ async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: s
     messages.append({"role": "user", "content": prompt})
 
     try:
+        logger.info(f"Sending text generation request to OpenRouter with model: {model}, prompt: {prompt}")
         response = await client.chat.completions.create(
             model=model,
             messages=messages,
             max_tokens=BOT_CONFIG["TEXT_GENERATION"]["MAX_TOKENS"],
             temperature=BOT_CONFIG["TEXT_GENERATION"]["TEMPERATURE"]
         )
-        return response.choices[0].message.content.strip()
+        
+        # Проверяем структуру ответа
+        if not response or not hasattr(response, 'choices') or not response.choices:
+            logger.error("Empty or invalid response from OpenRouter API")
+            return "Извините, произошла ошибка при получении ответа от API. Пожалуйста, попробуйте позже."
+            
+        # Безопасное извлечение результата
+        try:
+            result = response.choices[0].message.content.strip()
+            if not result:
+                logger.error("Empty content in response from OpenRouter API")
+                return "Извините, получен пустой ответ от API. Пожалуйста, попробуйте позже."
+            logger.info(f"Received response from OpenRouter: {result[:100]}...")
+            return result
+        except (AttributeError, IndexError) as e:
+            logger.error(f"Error extracting content from response: {str(e)}")
+            return "Извините, произошла ошибка при обработке ответа от API. Пожалуйста, попробуйте позже."
+            
     except Exception as e:
         logger.error(f"Error generating text: {str(e)}")
         return f"Произошла ошибка при генерации текста: {str(e)}"

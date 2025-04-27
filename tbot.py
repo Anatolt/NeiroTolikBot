@@ -1,13 +1,14 @@
 import logging
 import os
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from config import BOT_CONFIG
 from utils.helpers import post_init
-from handlers.commands import start, new_dialog, clear_memory_command, help_command
+from handlers.commands import start, new_dialog, clear_memory_command, help_command, models_command
 from handlers.messages import handle_message
-from services.generation import init_client
+from services.generation import init_client, check_model_availability
 from services.memory import init_db
 
 # Загрузка переменных окружения
@@ -32,12 +33,23 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-def main() -> None:
+async def check_default_model():
+    """Проверка доступности модели по умолчанию."""
+    is_available = await check_model_availability(BOT_CONFIG["DEFAULT_MODEL"])
+    if not is_available:
+        logger.warning(f"Default model {BOT_CONFIG['DEFAULT_MODEL']} is not available. Falling back to gpt-3.5-turbo")
+        BOT_CONFIG["DEFAULT_MODEL"] = "openai/gpt-3.5-turbo"
+
+async def main() -> None:
     """Основная функция запуска бота."""
     if not BOT_CONFIG["TELEGRAM_BOT_TOKEN"] or not BOT_CONFIG["OPENROUTER_API_KEY"]:
         logger.error("Please set TELEGRAM_BOT_TOKEN and OPENROUTER_API_KEY in .env file")
         return
 
+    # Проверяем доступность модели по умолчанию
+    await check_default_model()
+
+    # Создаем приложение
     application = Application.builder().token(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
 
     # Регистрация обработчиков команд
@@ -45,12 +57,35 @@ def main() -> None:
     application.add_handler(CommandHandler("new", new_dialog))
     application.add_handler(CommandHandler("clear", clear_memory_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("models", models_command))
     
     # Обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Starting bot polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Запускаем бота
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Держим бота в активном состоянии
+    try:
+        # Создаем Future, который никогда не завершится
+        stop = asyncio.Future()
+        await stop
+    except asyncio.CancelledError:
+        logger.info("Bot is stopping...")
+    finally:
+        # Корректно завершаем работу
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
 if __name__ == "__main__":
-    main() 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Error running bot: {str(e)}") 
