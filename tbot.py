@@ -1,8 +1,7 @@
 import logging
 import os
 import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, AIORateLimiter
 from dotenv import load_dotenv
 from config import BOT_CONFIG
 from utils.helpers import post_init
@@ -19,6 +18,10 @@ BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = os.getenv("CUSTOM_SYSTEM_PROMPT", "You are a helpful assistant.")
+
+# Параметры экономного потребления памяти
+UPDATE_QUEUE_MAXSIZE = int(os.getenv("UPDATE_QUEUE_MAXSIZE", "50"))
+MAX_CONCURRENT_UPDATES = int(os.getenv("MAX_CONCURRENT_UPDATES", "2"))
 
 # Инициализация клиента OpenRouter
 init_client()
@@ -49,8 +52,17 @@ async def main() -> None:
     # Проверяем доступность модели по умолчанию
     await check_default_model()
 
-    # Создаем приложение
-    application = Application.builder().token(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
+    # Создаем приложение с ограничениями для экономии памяти
+    update_queue = asyncio.Queue(maxsize=UPDATE_QUEUE_MAXSIZE)
+    application = (
+        Application.builder()
+        .token(BOT_CONFIG["TELEGRAM_BOT_TOKEN"])
+        .post_init(post_init)
+        .concurrent_updates(False)
+        .rate_limiter(AIORateLimiter(maximum_concurrent_updates=MAX_CONCURRENT_UPDATES))
+        .update_queue(update_queue)
+        .build()
+    )
 
     # Регистрация обработчиков команд
     application.add_handler(CommandHandler("start", start))
