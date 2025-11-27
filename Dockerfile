@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# Reduce image size and memory footprint
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -16,9 +21,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
 COPY . .
-
-# Ensure logs are flushed immediately
-ENV PYTHONUNBUFFERED=1
 
 # Default command
 CMD ["python", "tbot.py"]
