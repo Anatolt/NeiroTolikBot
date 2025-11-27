@@ -75,6 +75,31 @@ NeiroTolikBot/
    python tbot.py
    ```
 
+## Запуск в Docker
+
+1. Соберите образ бота:
+   ```bash
+   docker build -t neirotolikbot:latest .
+   ```
+
+2. Создайте файл `.env` (можно взять за основу `.env.example`) и укажите реальные значения переменных:
+   ```bash
+   TELEGRAM_BOT_TOKEN=...
+   OPENROUTER_API_KEY=...
+   PIAPI_KEY=...            # опционально
+   CUSTOM_SYSTEM_PROMPT=... # опционально
+   ```
+
+3. Запустите контейнер, передав переменные окружения из файла:
+   ```bash
+   docker run --env-file .env --name neirotolikbot -d neirotolikbot:latest
+   ```
+
+4. Просмотрите логи контейнера (опционально):
+   ```bash
+   docker logs -f neirotolikbot
+   ```
+
 ## Возможности
 
 - Генерация текста через различные модели (ChatGPT, Claude, DeepSeek)
