@@ -7,7 +7,11 @@ from config import BOT_CONFIG
 from utils.helpers import post_init
 from handlers.commands import start, new_dialog, clear_memory_command, help_command, models_command
 from handlers.messages import handle_message
-from services.generation import init_client, check_model_availability
+from services.generation import (
+    init_client,
+    check_model_availability,
+    choose_best_free_model,
+)
 from services.memory import init_db
 
 # Загрузка переменных окружения
@@ -37,10 +41,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 async def check_default_model():
-    """Проверка доступности модели по умолчанию."""
+    """Выбирает лучшую бесплатную модель и проверяет ее доступность."""
+    try:
+        best_free_model = await choose_best_free_model()
+        if best_free_model:
+            BOT_CONFIG["DEFAULT_MODEL"] = best_free_model
+            logger.info(f"Default model updated to best free option: {best_free_model}")
+    except Exception as e:
+        logger.error(f"Failed to select best free model: {str(e)}")
+
     is_available = await check_model_availability(BOT_CONFIG["DEFAULT_MODEL"])
     if not is_available:
-        logger.warning(f"Default model {BOT_CONFIG['DEFAULT_MODEL']} is not available. Falling back to gpt-3.5-turbo")
+        logger.warning(
+            f"Default model {BOT_CONFIG['DEFAULT_MODEL']} is not available. Falling back to gpt-3.5-turbo"
+        )
         BOT_CONFIG["DEFAULT_MODEL"] = "openai/gpt-3.5-turbo"
 
 async def main() -> None:
