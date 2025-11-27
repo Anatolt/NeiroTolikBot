@@ -2,8 +2,13 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
-from services.generation import generate_text, generate_image, client
-from services.memory import add_message, get_history, get_user_summary
+from services.generation import (
+    categorize_models,
+    fetch_models_data,
+    generate_image,
+    generate_text,
+)
+from services.memory import add_message
 from config import BOT_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -11,38 +16,59 @@ logger = logging.getLogger(__name__)
 async def get_capabilities() -> str:
     """Получение и форматирование информации о доступных моделях."""
     try:
-        response = await client.models.list()
-        capabilities = ["🤖 Доступные модели:\n"]
+        models_data = await fetch_models_data()
+        if not models_data:
+            return ["Извините, не удалось получить информацию о моих возможностях."]
+
+        categories = categorize_models(models_data)
+        capabilities = ["🤖 Доступные модели по категориям:\n\n"]
         current_part = capabilities[0]
-        
-        for model in response.data:
-            model_data = model if isinstance(model, dict) else model.model_dump()
-            model_id = model_data.get('id', 'Unknown')
-            context_length = model_data.get('context_length', 'N/A')
-            pricing = model_data.get('pricing', {})
-            prompt_price = pricing.get('prompt', 'N/A') if isinstance(pricing, dict) else 'N/A'
-            
-            model_info = f"• {model_id} (макс. контекст: {context_length})\n"
-            if prompt_price != 'N/A':
-                model_info += f"  └─ Цена: ${prompt_price}/1K токенов\n"
-            
-            if len(current_part + model_info) > 3000:
-                capabilities.append(model_info)
-                current_part = model_info
+        max_items_per_category = 20
+
+        category_titles = {
+            "free": "БЕСПЛАТНЫЕ МОДЕЛИ:",
+            "large_context": "МОДЕЛИ С БОЛЬШИМ КОНТЕКСТОМ (≥100K):",
+            "specialized": "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:",
+            "paid": "ПЛАТНЫЕ МОДЕЛИ:",
+        }
+
+        for key in ["free", "large_context", "specialized", "paid"]:
+            models = categories.get(key, [])
+            if not models:
+                continue
+
+            category_block = f"{category_titles[key]}\n"
+            displayed_models = models[:max_items_per_category]
+
+            for model in displayed_models:
+                context_length = model.get('context_length', 0)
+                context_kb = context_length / 1024 if context_length else 0
+                context_str = f"{context_kb:.0f}K" if context_kb > 0 else 'N/A'
+                category_block += f"• {model.get('id', 'Unknown')} ({context_str})\n"
+
+            remaining = len(models) - len(displayed_models)
+            if remaining > 0:
+                category_block += f"…и еще {remaining} моделей в этой категории\n"
+
+            category_block += "\n"
+
+            if len(current_part + category_block) > 3000:
+                capabilities.append(category_block)
+                current_part = category_block
             else:
-                current_part += model_info
-        
-        instructions = "\n💡 Как использовать:\n"
+                current_part += category_block
+
+        instructions = "💡 Как использовать:\n"
         instructions += f"• Просто напиши свой вопрос - отвечу через {BOT_CONFIG['DEFAULT_MODEL']}\n"
         instructions += "• Укажи модель в начале ('chatgpt расскажи о погоде')\n"
         instructions += "• Или в конце ('расскажи о погоде через claude')\n"
         instructions += "• Для картинок используй 'нарисуй' или 'сгенерируй картинку'"
-        
+
         if len(current_part + instructions) > 3000:
             capabilities.append(instructions)
         else:
             capabilities[-1] += instructions
-        
+
         return capabilities
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")
@@ -151,10 +177,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_id = str(message.from_user.id)
         model_name = model or BOT_CONFIG["DEFAULT_MODEL"]
         add_message(chat_id, user_id, "user", model_name, content)
-        
-        # Получаем историю и суммаризацию
-        history = get_history(chat_id, user_id)
-        summary = get_user_summary(chat_id, user_id)
         
         # Генерируем ответ
         response = await generate_text(content, model_name, chat_id, user_id)

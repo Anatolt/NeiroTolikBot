@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
 from config import BOT_CONFIG
 from services.memory import start_new_dialog, clear_memory
-from services.generation import client, init_client
+from services.generation import init_client, fetch_models_data, categorize_models
 
 logger = logging.getLogger(__name__)
 
@@ -80,84 +80,53 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /models - показывает список доступных моделей."""
     try:
-        client = init_client()
+        init_client()
         logger.info("Fetching models list from OpenRouter")
-        response = await client.models.list()
-        
-        # Проверяем структуру ответа
-        if not response:
-            logger.error("Empty response from OpenRouter API")
+        models_data = await fetch_models_data()
+
+        if not models_data:
             await update.message.reply_text("Не удалось получить список моделей. Пустой ответ от API.")
             return
-            
-        # Безопасное извлечение данных
-        models_data = []
-        if hasattr(response, 'data'):
-            models_data = response.data
-        elif isinstance(response, list):
-            models_data = response
-        else:
-            logger.error(f"Unexpected response format from OpenRouter: {response}")
-            await update.message.reply_text("Не удалось получить список моделей. Неожиданный формат ответа от API.")
-            return
-        
-        # Группируем модели по категориям
-        free_models = []
-        paid_models = []
-        large_context_models = []
-        specialized_models = []
-        
-        for model in models_data:
-            # Преобразуем модель в словарь, если она является объектом
-            model_data = model if isinstance(model, dict) else model.model_dump()
-            
-            # Извлекаем данные
-            model_id = model_data.get('id', 'Unknown')
-            context_length = model_data.get('context_length', 0)
-            
-            # Форматируем контекст в КБ
-            context_kb = context_length / 1024 if context_length else 0
-            context_str = f"{context_kb:.0f}K" if context_kb > 0 else 'N/A'
-            
-            # Создаем строку с информацией о модели
-            model_info = f"• {model_id} ({context_str})"
-            
-            # Определяем категорию модели
-            if ':free' in model_id:
-                free_models.append(model_info)
-            elif context_length >= 100000:  # Модели с контекстом >= 100K
-                large_context_models.append(model_info)
-            elif any(tag in model_id.lower() for tag in ['instruct', 'coding', 'research', 'solidity']):
-                specialized_models.append(model_info)
-            else:
-                paid_models.append(model_info)
-        
-        # Формируем сообщение
-        message = "🤖 Доступные модели:\n\n"
-        
-        if free_models:
-            message += "БЕСПЛАТНЫЕ МОДЕЛИ:\n"
-            message += "\n".join(free_models) + "\n\n"
-            
-        if large_context_models:
-            message += "МОДЕЛИ С БОЛЬШИМ КОНТЕКСТОМ (>100K):\n"
-            message += "\n".join(large_context_models) + "\n\n"
-            
-        if specialized_models:
-            message += "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:\n"
-            message += "\n".join(specialized_models) + "\n\n"
-            
-        if paid_models:
-            message += "ПЛАТНЫЕ МОДЕЛИ:\n"
-            message += "\n".join(paid_models) + "\n\n"
-        
+
+        categories = categorize_models(models_data)
+
+        category_titles = {
+            "free": "БЕСПЛАТНЫЕ МОДЕЛИ:",
+            "large_context": "МОДЕЛИ С БОЛЬШИМ КОНТЕКСТОМ (≥100K):",
+            "specialized": "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:",
+            "paid": "ПЛАТНЫЕ МОДЕЛИ:",
+        }
+
+        message = "🤖 Доступные модели по категориям:\n\n"
+        max_items_per_category = 20
+
+        for key in ["free", "large_context", "specialized", "paid"]:
+            models = categories.get(key, [])
+            if not models:
+                continue
+
+            message += f"{category_titles[key]}\n"
+            displayed_models = models[:max_items_per_category]
+            for model in displayed_models:
+                model_id = model.get('id', 'Unknown')
+                context_length = model.get('context_length', 0)
+                context_kb = context_length / 1024 if context_length else 0
+                context_str = f"{context_kb:.0f}K" if context_kb > 0 else 'N/A'
+                message += f"• {model_id} ({context_str})\n"
+
+            remaining = len(models) - len(displayed_models)
+            if remaining > 0:
+                message += f"…и еще {remaining} моделей в этой категории\n"
+
+            message += "\n"
+
         # Разбиваем сообщение на части, если оно слишком длинное
         max_length = 3000
         message_parts = [message[i:i+max_length] for i in range(0, len(message), max_length)]
-        
+
         for part in message_parts:
             await update.message.reply_text(part)
-            
+
         logger.info("Models list sent successfully")
     except Exception as e:
         logger.error(f"Error fetching models list: {str(e)}")

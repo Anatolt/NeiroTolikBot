@@ -51,6 +51,107 @@ async def check_model_availability(model: str) -> bool:
         logger.error(f"Error checking model availability: {str(e)}")
         return False
 
+
+async def fetch_models_data() -> list[dict]:
+    """Получает и нормализует список моделей из OpenRouter."""
+    try:
+        client = init_client()
+        response = await client.models.list()
+
+        if not response:
+            logger.error("Empty response while fetching models data")
+            return []
+
+        raw_models = []
+        if hasattr(response, "data"):
+            raw_models = response.data
+        elif isinstance(response, list):
+            raw_models = response
+        else:
+            logger.error(f"Unexpected models response format: {response}")
+            return []
+
+        normalized_models: list[dict] = []
+        for model in raw_models:
+            if isinstance(model, dict):
+                normalized_models.append(model)
+            elif hasattr(model, "model_dump"):
+                normalized_models.append(model.model_dump())
+            else:
+                logger.warning(f"Skipping model with unknown type: {model}")
+
+        return normalized_models
+    except Exception as e:
+        logger.error(f"Error fetching models data: {str(e)}")
+        return []
+
+
+def _is_free_pricing(prompt_price) -> bool:
+    try:
+        return float(prompt_price) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def categorize_models(models_data: list[dict]) -> dict[str, list[dict]]:
+    """Группирует модели по внутренним категориям."""
+    categories: dict[str, list[dict]] = {
+        "free": [],
+        "large_context": [],
+        "specialized": [],
+        "paid": [],
+    }
+
+    for model in models_data:
+        model_id = model.get("id", "Unknown")
+        context_length = model.get("context_length", 0) or 0
+        pricing = model.get("pricing", {}) if isinstance(model.get("pricing"), dict) else {}
+        prompt_price = pricing.get("prompt")
+
+        is_free = ":free" in model_id or _is_free_pricing(prompt_price)
+        is_large_context = context_length >= 100_000
+        is_specialized = any(
+            keyword in model_id.lower()
+            for keyword in ["instruct", "coding", "research", "solidity", "math"]
+        )
+
+        if is_free:
+            categories["free"].append(model)
+        elif is_large_context:
+            categories["large_context"].append(model)
+        elif is_specialized:
+            categories["specialized"].append(model)
+        else:
+            categories["paid"].append(model)
+
+    # Сортируем внутри категорий по длине контекста (убыванию)
+    for key, models in categories.items():
+        categories[key] = sorted(models, key=lambda m: m.get("context_length", 0) or 0, reverse=True)
+
+    return categories
+
+
+async def choose_best_free_model() -> str | None:
+    """Определяет самую мощную бесплатную модель на основе длины контекста."""
+    models_data = await fetch_models_data()
+    if not models_data:
+        return None
+
+    free_models = [
+        model
+        for model in models_data
+        if ":free" in model.get("id", "") or _is_free_pricing(model.get("pricing", {}).get("prompt"))
+    ]
+
+    if not free_models:
+        logger.warning("No free models available in OpenRouter response")
+        return None
+
+    best_model = max(free_models, key=lambda m: m.get("context_length", 0) or 0)
+    best_model_id = best_model.get("id")
+    logger.info(f"Selected best free model: {best_model_id}")
+    return best_model_id
+
 async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: str = None) -> str:
     """Генерация текста с помощью OpenRouter API."""
     client = init_client()
@@ -78,8 +179,14 @@ async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: s
             if msg["role"] in ["user", "assistant"]:
                 messages.append({"role": msg["role"], "content": msg["text"]})
     
-    # Добавляем текущий запрос пользователя
-    messages.append({"role": "user", "content": prompt})
+    # Добавляем текущий запрос пользователя, если он еще не в истории
+    current_prompt_in_history = False
+    if chat_id and user_id:
+        if history and history[0].get("role") == "user" and history[0].get("text") == prompt:
+            current_prompt_in_history = True
+
+    if not current_prompt_in_history:
+        messages.append({"role": "user", "content": prompt})
 
     try:
         logger.info(f"Sending text generation request to OpenRouter with model: {model}, prompt: {prompt}")
