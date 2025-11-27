@@ -1,7 +1,7 @@
 import logging
 import os
 import asyncio
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, AIORateLimiter
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from config import BOT_CONFIG
 from utils.helpers import post_init
@@ -59,7 +59,6 @@ async def main() -> None:
         .token(BOT_CONFIG["TELEGRAM_BOT_TOKEN"])
         .post_init(post_init)
         .concurrent_updates(False)
-        .rate_limiter(AIORateLimiter(maximum_concurrent_updates=MAX_CONCURRENT_UPDATES))
         .update_queue(update_queue)
         .build()
     )

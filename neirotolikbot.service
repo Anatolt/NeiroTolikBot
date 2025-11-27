@@ -1,0 +1,22 @@
+[Unit]
+Description=NeiroTolikBot Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/tolikNeiroBot/NeiroTolikBot
+Environment="PATH=/root/tolikNeiroBot/NeiroTolikBot/venv/bin"
+ExecStart=/root/tolikNeiroBot/NeiroTolikBot/venv/bin/python /root/tolikNeiroBot/NeiroTolikBot/tbot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+MemoryMax=150M
+MemoryHigh=150M
+CPUQuota=30%
+CPUAccounting=true
+
+[Install]
+WantedBy=multi-user.target
+
