@@ -38,6 +38,10 @@ Telegram бот с поддержкой генерации текста чере
 - [ ] Система монетизации
 - [ ] Горячая перезагрузка модулей без перезапуска бота
 
+### Тестирование
+- [ ] Тесты API сервисов (OpenRouter и PiAPI.ai)
+- [ ] Система автотестов запросов в API (без генерации, с проверкой доступности и корректности ответов API)
+
 ## Структура проекта
 
 ```
@@ -58,8 +62,16 @@ NeiroTolikBot/
 
 ## Установка и запуск
 
+> ⚠️ Рекомендуется работать в виртуальном окружении, чтобы не трогать системный Python.
+
 1. Клонируйте репозиторий
-2. Установите зависимости:
+2. Создайте и активируйте виртуальное окружение:
+   ```bash
+   cd NeiroTolikBot
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+3. Установите зависимости:
    ```bash
    pip install -r requirements.txt
    ```
@@ -74,6 +86,19 @@ NeiroTolikBot/
    ```bash
    python tbot.py
    ```
+
+### Запуск как systemd-сервис
+
+В репозитории уже есть файл `neirotolikbot.service`.
+
+```bash
+sudo cp neirotolikbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable neirotolikbot.service
+sudo systemctl start neirotolikbot.service
+```
+
+Логи: `sudo journalctl -u neirotolikbot.service -f`
 
 ## Запуск в Docker с ограничением памяти
 
@@ -93,6 +118,63 @@ NeiroTolikBot/
 Через переменные окружения можно управлять дополнительными настройками для экономии ресурсов:
 - `UPDATE_QUEUE_MAXSIZE` — максимальный размер очереди обновлений (по умолчанию 50)
 - `MAX_CONCURRENT_UPDATES` — максимальное число одновременно обрабатываемых обновлений (по умолчанию 2)
+
+## Автоматическое обновление из GitHub
+
+В проекте есть простой механизм CI/CD, который подтягивает изменения из GitHub и перезапускает бота после каждого push в `main/master`.
+
+### Компоненты
+
+- `webhook_server.py` — небольшой Flask-сервер, принимающий webhook от GitHub
+- `deploy.sh` — скрипт, который:
+  - делает `git pull`
+  - определяет, запущен бот через systemd или Docker
+  - перезапускает нужный сервис/контейнер
+- `webhook.service` — пример systemd-сервиса для webhook-сервера
+
+### Настройка
+
+1. **Переменные окружения** (добавьте в `.env`):
+   ```
+   GITHUB_WEBHOOK_SECRET=случайная_строка_из_32_символов
+   WEBHOOK_PORT=5000
+   WEBHOOK_HOST=0.0.0.0
+   ```
+   Сгенерировать секрет: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
+
+2. **Убедитесь, что зависимости установлены** (см. раздел «Установка и запуск»).
+
+3. **Запустите webhook-сервер как сервис**:
+   ```bash
+   sudo cp webhook.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable webhook.service
+   sudo systemctl start webhook.service
+   sudo journalctl -u webhook.service -f  # проверки
+   ```
+
+4. **Настройте GitHub Webhook**:
+   - GitHub → Settings → Webhooks → Add webhook
+   - Payload URL: `http(s)://ВАШ_СЕРВЕР:5000/webhook`
+   - Content type: `application/json`
+   - Secret: то же значение, что `GITHUB_WEBHOOK_SECRET`
+   - Events: Just the push event
+
+5. **Пробросьте порт**:
+   - откройте 5000/TCP в файрволе (`sudo ufw allow 5000/tcp`)
+   - либо повесьте nginx/Cloudflare/ngrok поверх сервиса
+
+6. **Тест**: в настройках webhook нажмите «Redeliver» или сделайте тестовый push.
+
+### Как это работает
+
+1. GitHub присылает запрос на `/webhook`
+2. `webhook_server.py` проверяет подпись и запускает `deploy.sh`
+3. Скрипт определяет окружение:
+   - если поднят Docker (`docker-compose.yml`), пересобирает и перезапускает контейнер
+   - иначе перезапускает `neirotolikbot.service`
+   - если ничего из перечисленного не найдено — только делает `git pull`
+4. Бот обновляется до последнего коммита
 
 ## Возможности
 

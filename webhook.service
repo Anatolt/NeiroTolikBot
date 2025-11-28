@@ -1,0 +1,18 @@
+[Unit]
+Description=NeiroTolikBot GitHub Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/tolikNeiroBot/NeiroTolikBot
+Environment="PATH=/root/tolikNeiroBot/NeiroTolikBot/venv/bin"
+ExecStart=/root/tolikNeiroBot/NeiroTolikBot/venv/bin/python /root/tolikNeiroBot/NeiroTolikBot/webhook_server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
