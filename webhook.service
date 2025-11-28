@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/tolikNeiroBot/NeiroTolikBot
-Environment="PATH=/root/tolikNeiroBot/NeiroTolikBot/venv/bin"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/tolikNeiroBot/NeiroTolikBot/venv/bin"
 ExecStart=/root/tolikNeiroBot/NeiroTolikBot/venv/bin/python /root/tolikNeiroBot/NeiroTolikBot/webhook_server.py
 Restart=always
 RestartSec=10

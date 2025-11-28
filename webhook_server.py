@@ -84,11 +84,15 @@ def github_webhook():
                 
                 # Запускаем скрипт обновления
                 try:
+                    # Используем полный путь к bash и системный PATH
+                    env = os.environ.copy()
+                    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:" + env.get("PATH", "")
                     result = subprocess.run(
-                        ["bash", DEPLOY_SCRIPT],
+                        ["/usr/bin/bash", DEPLOY_SCRIPT],
                         capture_output=True,
                         text=True,
-                        timeout=300  # 5 минут таймаут
+                        timeout=300,  # 5 минут таймаут
+                        env=env
                     )
                     
                     if result.returncode == 0:

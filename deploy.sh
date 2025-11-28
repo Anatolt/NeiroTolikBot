@@ -24,14 +24,18 @@ warning() {
 
 # Определяем директорию проекта
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$PROJECT_DIR"
+# SCRIPT_DIR - это NeiroTolikBot, там находится .git
+cd "$SCRIPT_DIR"
 
 log "Starting deployment..."
-log "Project directory: $PROJECT_DIR"
+log "Project directory: $SCRIPT_DIR"
 
 # Проверяем, используется ли Docker
-if command -v docker-compose &> /dev/null || command -v docker &> /dev/null; then
+# Сначала проверяем systemd, так как это приоритетнее
+if systemctl is-active --quiet neirotolikbot.service 2>/dev/null; then
+    log "Detected systemd service (priority)"
+    # Продолжим ниже к проверке systemd
+elif command -v docker-compose &> /dev/null || command -v docker &> /dev/null; then
     if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
         log "Detected Docker Compose setup"
         
@@ -51,11 +55,14 @@ if command -v docker-compose &> /dev/null || command -v docker &> /dev/null; the
             docker-compose down
             docker-compose build --no-cache
             docker-compose up -d
-        else
-            # Используем docker compose (новая версия)
+        elif docker compose version &> /dev/null 2>&1; then
+            # Используем docker compose (новая версия, плагин)
             docker compose down
             docker compose build --no-cache
             docker compose up -d
+        else
+            error "Neither docker-compose nor docker compose found"
+            exit 1
         fi
         
         log "Docker container restarted successfully"
