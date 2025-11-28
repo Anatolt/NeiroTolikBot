@@ -95,14 +95,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("models", models_command))
     application.add_handler(CommandHandler("models_free", models_free_command))
-    application.add_handler(CommandHandler("models-paid", models_paid_command))
     application.add_handler(CommandHandler("models_paid", models_paid_command))
-    application.add_handler(CommandHandler("models-free", models_free_command))
-    application.add_handler(CommandHandler("models-large-context", models_large_context_command))
     application.add_handler(CommandHandler("models_large_context", models_large_context_command))
-    application.add_handler(CommandHandler("models-specialized", models_specialized_command))
     application.add_handler(CommandHandler("models_specialized", models_specialized_command))
-    application.add_handler(CommandHandler("models-all", models_all_command))
     application.add_handler(CommandHandler("models_all", models_all_command))
     
     # Обработчик текстовых сообщений
@@ -113,7 +108,8 @@ async def main() -> None:
     # Запускаем бота
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
+    # Указываем явно, какие типы обновлений получать (включая сообщения из групп)
+    await application.updater.start_polling(allowed_updates=["message", "edited_message", "callback_query"])
     
     # Держим бота в активном состоянии
     try:

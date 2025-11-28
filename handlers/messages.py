@@ -1,5 +1,7 @@
 import logging
+import re
 from telegram import Update
+from telegram.constants import ChatType
 from telegram.ext import ContextTypes
 from handlers.commands import MODELS_HINT_TEXT
 from services.generation import (
@@ -88,6 +90,31 @@ async def route_request(text: str, bot_username: str | None) -> tuple[str, str, 
     model = None
     prompt = text
     
+    # Проверка на прямое указание модели в формате "ответь с {model_name}" или "с {model_name}"
+    # Паттерн для поиска "ответь с" или "с" перед именем модели
+    # Имя модели может содержать: буквы, цифры, дефисы, точки, слеши, двоеточия
+    model_pattern = r'(?:ответь\s+с|с)\s+([a-zA-Z0-9\-\._/]+(?::[a-zA-Z0-9\-\._]+)?)'
+    match = re.search(model_pattern, text_lower, re.IGNORECASE)
+    if match:
+        extracted_model = match.group(1)
+        # Удаляем указание модели из текста (включая возможные пробелы и запятые после)
+        # Используем более точный паттерн для удаления
+        prompt = re.sub(
+            r'(?:ответь\s+с|с)\s+' + re.escape(extracted_model) + r'[,\s]*',
+            '',
+            text,
+            flags=re.IGNORECASE,
+            count=1
+        ).strip()
+        # Убираем лишние пробелы и запятые в начале
+        prompt = re.sub(r'^[,\s]+', '', prompt)
+        # Если промпт не пустой, возвращаем его с моделью
+        if prompt:
+            return "text", prompt, extracted_model
+        # Если промпт пустой, но модель указана, все равно возвращаем модель
+        # (пользователь может хотеть просто проверить связь с моделью)
+        return "text", "", extracted_model
+    
     # Проверка на указание модели в начале
     model_keywords = {
         "chatgpt": "openai/gpt-3.5-turbo",
@@ -122,7 +149,12 @@ async def route_request(text: str, bot_username: str | None) -> tuple[str, str, 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик входящих сообщений."""
     message = update.message
-    if not message or not message.text:
+    if not message:
+        logger.debug("Received update without message")
+        return
+    
+    if not message.text:
+        logger.debug(f"Received non-text message in chat {message.chat_id}, type: {message.chat.type}")
         return
 
     bot_username = context.bot.username
@@ -130,18 +162,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_type = message.chat.type
     effective_text = text
     
-    # Добавляем подробное логирование
-    logger.info(f"Received message: '{text}' from user {message.from_user.username} in chat {message.chat_id}")
-    logger.info(f"Chat type: {chat_type}, Bot username: {bot_username}")
+    # Добавляем подробное логирование для всех сообщений
+    logger.info(f"Received message: '{text}' from user {message.from_user.username if message.from_user else 'unknown'} in chat {message.chat_id}")
+    logger.info(f"Chat type: {chat_type} (value: {chat_type.value if hasattr(chat_type, 'value') else chat_type}), Bot username: {bot_username}")
+    logger.info(f"Chat title: {message.chat.title if hasattr(message.chat, 'title') else 'N/A'}")
     
     # Проверка на упоминание бота в групповых чатах
-    if chat_type in ["group", "supergroup"]:
-        if bot_username and f"@{bot_username}" in text:
+    if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        # Проверяем упоминание бота через entities (более надежный способ)
+        bot_mentioned = False
+        if message.entities:
+            for entity in message.entities:
+                if entity.type == "mention" and bot_username:
+                    mention_text = text[entity.offset:entity.offset + entity.length]
+                    if mention_text == f"@{bot_username}":
+                        bot_mentioned = True
+                        # Удаляем упоминание из текста
+                        effective_text = (
+                            text[:entity.offset] + text[entity.offset + entity.length:]
+                        ).strip()
+                        # Удаляем лишние пробелы и знаки препинания в начале
+                        effective_text = re.sub(r'^[,\s:]+', '', effective_text)
+                        break
+        
+        # Если не нашли через entities, проверяем простым поиском строки
+        if not bot_mentioned and bot_username and f"@{bot_username}" in text:
+            bot_mentioned = True
             effective_text = text.replace(f"@{bot_username}", "").strip()
-            logger.info(f"Group chat message, extracted text: '{effective_text}'")
-        else:
+            # Удаляем лишние пробелы и знаки препинания в начале
+            effective_text = re.sub(r'^[,\s:]+', '', effective_text)
+        
+        if not bot_mentioned:
             logger.info("Group chat message without bot mention, ignoring")
             return
+        
+        logger.info(f"Group chat message, extracted text: '{effective_text}'")
     
     # Маршрутизация запроса
     logger.info(f"Routing request: '{effective_text}'")
