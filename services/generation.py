@@ -11,6 +11,13 @@ logger = logging.getLogger(__name__)
 # Глобальная переменная для клиента OpenRouter
 client = None
 
+CATEGORY_TITLES = {
+    "free": "БЕСПЛАТНЫЕ МОДЕЛИ:",
+    "large_context": "МОДЕЛИ С БОЛЬШИМ КОНТЕКСТОМ (≥100K):",
+    "specialized": "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:",
+    "paid": "ПЛАТНЫЕ МОДЕЛИ:",
+}
+
 def init_client():
     """Инициализация клиента OpenRouter после загрузки конфигурации."""
     global client
@@ -129,6 +136,74 @@ def categorize_models(models_data: list[dict]) -> dict[str, list[dict]]:
         categories[key] = sorted(models, key=lambda m: m.get("context_length", 0) or 0, reverse=True)
 
     return categories
+
+
+def format_model_list(
+    categories: dict[str, list[dict]],
+    order: list[str],
+    category_titles: dict[str, str],
+    header: str | None = "🤖 Доступные модели по категориям:\n\n",
+    max_items_per_category: int | None = 20,
+) -> list[str]:
+    """Формирует человекочитаемый список моделей и разбивает его на части."""
+
+    max_length = 3000
+    message_parts: list[str] = []
+    current_part = header or ""
+
+    for key in order:
+        models = categories.get(key, [])
+        if not models:
+            continue
+
+        category_block = f"{category_titles.get(key, key)}\n"
+        displayed_models = models if max_items_per_category is None else models[:max_items_per_category]
+
+        for model in displayed_models:
+            context_length = model.get("context_length", 0)
+            context_kb = context_length / 1024 if context_length else 0
+            context_str = f"{context_kb:.0f}K" if context_kb > 0 else "N/A"
+            category_block += f"• {model.get('id', 'Unknown')} ({context_str})\n"
+
+        if max_items_per_category is not None:
+            remaining = len(models) - len(displayed_models)
+            if remaining > 0:
+                category_block += f"…и еще {remaining} моделей в этой категории\n"
+
+        category_block += "\n"
+
+        if len(current_part) + len(category_block) > max_length:
+            if current_part:
+                message_parts.append(current_part)
+            current_part = category_block
+        else:
+            current_part += category_block
+
+    if current_part:
+        message_parts.append(current_part)
+
+    return message_parts
+
+
+async def build_models_messages(
+    order: list[str],
+    header: str | None = "🤖 Доступные модели по категориям:\n\n",
+    max_items_per_category: int | None = 20,
+) -> list[str]:
+    """Получает список моделей и формирует сообщения для выдачи пользователю."""
+
+    models_data = await fetch_models_data()
+    if not models_data:
+        return []
+
+    categories = categorize_models(models_data)
+    return format_model_list(
+        categories,
+        order,
+        CATEGORY_TITLES,
+        header=header,
+        max_items_per_category=max_items_per_category,
+    )
 
 
 async def choose_best_free_model() -> str | None:

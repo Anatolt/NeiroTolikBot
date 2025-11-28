@@ -5,7 +5,18 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from config import BOT_CONFIG
 from utils.helpers import post_init
-from handlers.commands import start, new_dialog, clear_memory_command, help_command, models_command
+from handlers.commands import (
+    clear_memory_command,
+    help_command,
+    models_all_command,
+    models_command,
+    models_free_command,
+    models_large_context_command,
+    models_paid_command,
+    models_specialized_command,
+    new_dialog,
+    start,
+)
 from handlers.messages import handle_message
 from services.generation import (
     init_client,
@@ -83,6 +94,16 @@ async def main() -> None:
     application.add_handler(CommandHandler("clear", clear_memory_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("models", models_command))
+    application.add_handler(CommandHandler("models_free", models_free_command))
+    application.add_handler(CommandHandler("models-paid", models_paid_command))
+    application.add_handler(CommandHandler("models_paid", models_paid_command))
+    application.add_handler(CommandHandler("models-free", models_free_command))
+    application.add_handler(CommandHandler("models-large-context", models_large_context_command))
+    application.add_handler(CommandHandler("models_large_context", models_large_context_command))
+    application.add_handler(CommandHandler("models-specialized", models_specialized_command))
+    application.add_handler(CommandHandler("models_specialized", models_specialized_command))
+    application.add_handler(CommandHandler("models-all", models_all_command))
+    application.add_handler(CommandHandler("models_all", models_all_command))
     
     # Обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

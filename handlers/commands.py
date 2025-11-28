@@ -4,9 +4,19 @@ from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
 from config import BOT_CONFIG
 from services.memory import start_new_dialog, clear_memory
-from services.generation import init_client, fetch_models_data, categorize_models
+from services.generation import CATEGORY_TITLES, build_models_messages
 
 logger = logging.getLogger(__name__)
+
+MODELS_HINT_TEXT = (
+    "🤖 Списки моделей по категориям:\n"
+    "• /models-free — бесплатные\n"
+    "• /models-paid — платные\n"
+    "• /models-large-context — с большим контекстом\n"
+    "• /models-specialized — специализированные\n"
+    "• /models-all — полный список (может быть длинным)\n\n"
+    "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
+)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
@@ -67,7 +77,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"📝 /new \\- Начать новый диалог \\(сохраняет историю для будущего использования\\)\n"
         f"🧹 /clear \\- Полностью очистить память бота\n"
         f"❓ /help \\- Показать эту справку\n"
-        f"🤖 /models \\- Показать список доступных моделей\n\n"
+        f"🤖 /models \\- Подсказка по спискам моделей\n"
+        f"   /models-free, /models-paid, /models-large-context, /models-specialized\n"
+        f"   /models-all — полный список моделей\n\n"
         f"Также вы можете:\n"
         f"• Задавать вопросы боту\n"
         f"• Просить нарисовать картинки\n"
@@ -77,57 +89,44 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await update.message.reply_markdown_v2(text=text)
 
-async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /models - показывает список доступных моделей."""
-    try:
-        init_client()
-        logger.info("Fetching models list from OpenRouter")
-        models_data = await fetch_models_data()
+async def _send_models(update: Update, order: list[str], header: str, max_items: int | None = 20) -> None:
+    """Получает модели и отправляет пользователю списком."""
 
-        if not models_data:
-            await update.message.reply_text("Не удалось получить список моделей. Пустой ответ от API.")
-            return
+    messages = await build_models_messages(order, header=header, max_items_per_category=max_items)
 
-        categories = categorize_models(models_data)
-
-        category_titles = {
-            "free": "БЕСПЛАТНЫЕ МОДЕЛИ:",
-            "large_context": "МОДЕЛИ С БОЛЬШИМ КОНТЕКСТОМ (≥100K):",
-            "specialized": "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:",
-            "paid": "ПЛАТНЫЕ МОДЕЛИ:",
-        }
-
-        message = "🤖 Доступные модели по категориям:\n\n"
-        max_items_per_category = 20
-
-        for key in ["free", "large_context", "specialized", "paid"]:
-            models = categories.get(key, [])
-            if not models:
-                continue
-
-            message += f"{category_titles[key]}\n"
-            displayed_models = models[:max_items_per_category]
-            for model in displayed_models:
-                model_id = model.get('id', 'Unknown')
-                context_length = model.get('context_length', 0)
-                context_kb = context_length / 1024 if context_length else 0
-                context_str = f"{context_kb:.0f}K" if context_kb > 0 else 'N/A'
-                message += f"• {model_id} ({context_str})\n"
-
-            remaining = len(models) - len(displayed_models)
-            if remaining > 0:
-                message += f"…и еще {remaining} моделей в этой категории\n"
-
-            message += "\n"
-
-        # Разбиваем сообщение на части, если оно слишком длинное
-        max_length = 3000
-        message_parts = [message[i:i+max_length] for i in range(0, len(message), max_length)]
-
-        for part in message_parts:
-            await update.message.reply_text(part)
-
-        logger.info("Models list sent successfully")
-    except Exception as e:
-        logger.error(f"Error fetching models list: {str(e)}")
+    if not messages:
         await update.message.reply_text("Не удалось получить список моделей. Пожалуйста, попробуйте позже.")
+        return
+
+    for part in messages:
+        await update.message.reply_text(part)
+
+
+async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /models - показывает подсказку по спискам моделей."""
+    await update.message.reply_text(MODELS_HINT_TEXT)
+
+
+async def models_free_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает бесплатные модели."""
+    await _send_models(update, ["free"], CATEGORY_TITLES["free"], max_items=20)
+
+
+async def models_paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает платные модели."""
+    await _send_models(update, ["paid"], CATEGORY_TITLES["paid"], max_items=20)
+
+
+async def models_large_context_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает модели с большим контекстом."""
+    await _send_models(update, ["large_context"], CATEGORY_TITLES["large_context"], max_items=20)
+
+
+async def models_specialized_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает специализированные модели."""
+    await _send_models(update, ["specialized"], CATEGORY_TITLES["specialized"], max_items=20)
+
+
+async def models_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает полный список моделей по категориям."""
+    await _send_models(update, ["free", "large_context", "specialized", "paid"], MODELS_HINT_TEXT, max_items=None)

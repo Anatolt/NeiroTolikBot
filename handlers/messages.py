@@ -1,10 +1,10 @@
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
-from utils.helpers import escape_markdown_v2
+from handlers.commands import MODELS_HINT_TEXT
 from services.generation import (
-    categorize_models,
-    fetch_models_data,
+    CATEGORY_TITLES,
+    build_models_messages,
     generate_image,
     generate_text,
 )
@@ -13,50 +13,17 @@ from config import BOT_CONFIG
 
 logger = logging.getLogger(__name__)
 
-async def get_capabilities() -> str:
+async def get_capabilities() -> list[str]:
     """Получение и форматирование информации о доступных моделях."""
     try:
-        models_data = await fetch_models_data()
-        if not models_data:
+        capabilities = await build_models_messages(
+            ["free", "large_context", "specialized", "paid"],
+            header="🤖 Доступные модели по категориям:\n\n",
+            max_items_per_category=20,
+        )
+
+        if not capabilities:
             return ["Извините, не удалось получить информацию о моих возможностях."]
-
-        categories = categorize_models(models_data)
-        capabilities = ["🤖 Доступные модели по категориям:\n\n"]
-        current_part = capabilities[0]
-        max_items_per_category = 20
-
-        category_titles = {
-            "free": "БЕСПЛАТНЫЕ МОДЕЛИ:",
-            "large_context": "МОДЕЛИ С БОЛЬШИМ КОНТЕКСТОМ (≥100K):",
-            "specialized": "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:",
-            "paid": "ПЛАТНЫЕ МОДЕЛИ:",
-        }
-
-        for key in ["free", "large_context", "specialized", "paid"]:
-            models = categories.get(key, [])
-            if not models:
-                continue
-
-            category_block = f"{category_titles[key]}\n"
-            displayed_models = models[:max_items_per_category]
-
-            for model in displayed_models:
-                context_length = model.get('context_length', 0)
-                context_kb = context_length / 1024 if context_length else 0
-                context_str = f"{context_kb:.0f}K" if context_kb > 0 else 'N/A'
-                category_block += f"• {model.get('id', 'Unknown')} ({context_str})\n"
-
-            remaining = len(models) - len(displayed_models)
-            if remaining > 0:
-                category_block += f"…и еще {remaining} моделей в этой категории\n"
-
-            category_block += "\n"
-
-            if len(current_part + category_block) > 3000:
-                capabilities.append(category_block)
-                current_part = category_block
-            else:
-                current_part += category_block
 
         instructions = "💡 Как использовать:\n"
         instructions += f"• Просто напиши свой вопрос - отвечу через {BOT_CONFIG['DEFAULT_MODEL']}\n"
@@ -64,7 +31,7 @@ async def get_capabilities() -> str:
         instructions += "• Или в конце ('расскажи о погоде через claude')\n"
         instructions += "• Для картинок используй 'нарисуй' или 'сгенерируй картинку'"
 
-        if len(current_part + instructions) > 3000:
+        if len(capabilities[-1] + instructions) > 3000:
             capabilities.append(instructions)
         else:
             capabilities[-1] += instructions
@@ -74,18 +41,47 @@ async def get_capabilities() -> str:
         logger.error(f"Error getting capabilities: {str(e)}")
         return ["Извините, не удалось получить информацию о моих возможностях."]
 
+async def send_models_by_request(
+    message,
+    order: list[str],
+    header: str,
+    max_items: int | None = 20,
+) -> None:
+    """Отправляет список моделей для указанной категории."""
+
+    parts = await build_models_messages(order, header=header, max_items_per_category=max_items)
+    if not parts:
+        await message.reply_text("Не удалось получить список моделей. Пожалуйста, попробуйте позже.")
+        return
+
+    for part in parts:
+        await message.reply_text(part)
+
 async def route_request(text: str, bot_username: str | None) -> tuple[str, str, str | None]:
     """Маршрутизация запроса к соответствующему сервису."""
+    text_lower = text.lower().strip()
+
     # Проверка на запрос возможностей
-    if text.lower() in ["что ты умеешь", "возможности", "capabilities", "help", "помощь"]:
+    if text_lower in ["что ты умеешь", "возможности", "capabilities", "help", "помощь"]:
         return "help", "help", None
-    
+
     # Проверка на запрос списка моделей
-    if text.lower() in ["модели", "models"]:
-        return "capabilities", await get_capabilities(), None
-    
+    if text_lower in ["модели", "models"]:
+        return "models_hint", "", None
+
+    model_aliases = {
+        "покажи бесплатные модели": "free",
+        "покажи платные модели": "paid",
+        "покажи модели с большим контекстом": "large_context",
+        "покажи специализированные модели": "specialized",
+        "покажи все модели": "all",
+    }
+
+    if text_lower in model_aliases:
+        return "models_category", model_aliases[text_lower], None
+
     # Проверка на запрос изображения
-    if text.lower().startswith(("нарисуй", "сгенерируй картинку", "создай изображение")):
+    if text_lower.startswith(("нарисуй", "сгенерируй картинку", "создай изображение")):
         return "image", text, None
     
     # Определение модели для текстового запроса
@@ -158,10 +154,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         capabilities = await get_capabilities()
         for part in capabilities:
             await message.reply_text(part)
-    elif request_type == "capabilities":
-        logger.info("Processing capabilities request")
-        for part in content:
-            await message.reply_text(part)
+    elif request_type == "models_hint":
+        logger.info("Providing models hint")
+        await message.reply_text(MODELS_HINT_TEXT)
+    elif request_type == "models_category":
+        logger.info(f"Providing models list for category: {content}")
+        if content == "all":
+            await send_models_by_request(
+                message,
+                ["free", "large_context", "specialized", "paid"],
+                MODELS_HINT_TEXT,
+                max_items=None,
+            )
+        else:
+            await send_models_by_request(
+                message,
+                [content],
+                CATEGORY_TITLES.get(content, "Список моделей:"),
+                max_items=20,
+            )
     elif request_type == "image":
         logger.info(f"Processing image generation request: '{content}'")
         await message.reply_text("Генерирую изображение...")
