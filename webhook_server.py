@@ -8,6 +8,7 @@ import hmac
 import hashlib
 import subprocess
 import logging
+import threading
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
@@ -28,6 +29,30 @@ WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 
 # Путь к скрипту обновления
 DEPLOY_SCRIPT = os.path.join(os.path.dirname(__file__), "deploy.sh")
+
+def run_deploy_script():
+    """Запускает deploy.sh в отдельном потоке, чтобы не блокировать ответ GitHub."""
+    try:
+        env = os.environ.copy()
+        # Явно прописываем PATH, чтобы systemd/cron не влияли на доступность bash/git
+        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:" + env.get("PATH", "")
+        result = subprocess.run(
+            ["/usr/bin/bash", DEPLOY_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env
+        )
+
+        if result.returncode == 0:
+            logger.info("Deployment successful")
+            logger.info(f"Deploy output: {result.stdout}")
+        else:
+            logger.error(f"Deployment failed: {result.stderr}")
+    except subprocess.TimeoutExpired:
+        logger.error("Deployment script timeout")
+    except Exception as e:
+        logger.error(f"Error running deploy script: {str(e)}")
 
 
 def verify_signature(payload_body, signature_header):
@@ -71,7 +96,10 @@ def github_webhook():
             return jsonify({"error": "Invalid signature"}), 401
         
         # Парсим JSON payload
-        event = request.json
+        event = request.get_json(silent=True)
+        if event is None:
+            logger.warning("Received webhook without JSON body")
+            return jsonify({"error": "Invalid payload"}), 400
         
         # Проверяем тип события
         event_type = request.headers.get("X-GitHub-Event")
@@ -82,47 +110,12 @@ def github_webhook():
             if ref in ["refs/heads/main", "refs/heads/master"]:
                 logger.info(f"Received push event to {ref}, starting deployment...")
                 
-                # Запускаем скрипт обновления
-                try:
-                    # Используем полный путь к bash и системный PATH
-                    env = os.environ.copy()
-                    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:" + env.get("PATH", "")
-                    result = subprocess.run(
-                        ["/usr/bin/bash", DEPLOY_SCRIPT],
-                        capture_output=True,
-                        text=True,
-                        timeout=300,  # 5 минут таймаут
-                        env=env
-                    )
-                    
-                    if result.returncode == 0:
-                        logger.info("Deployment successful")
-                        logger.info(f"Deploy output: {result.stdout}")
-                        return jsonify({
-                            "status": "success",
-                            "message": "Deployment started successfully",
-                            "output": result.stdout
-                        }), 200
-                    else:
-                        logger.error(f"Deployment failed: {result.stderr}")
-                        return jsonify({
-                            "status": "error",
-                            "message": "Deployment failed",
-                            "error": result.stderr
-                        }), 500
-                        
-                except subprocess.TimeoutExpired:
-                    logger.error("Deployment script timeout")
-                    return jsonify({
-                        "status": "error",
-                        "message": "Deployment timeout"
-                    }), 500
-                except Exception as e:
-                    logger.error(f"Error running deploy script: {str(e)}")
-                    return jsonify({
-                        "status": "error",
-                        "message": f"Error: {str(e)}"
-                    }), 500
+                # Стартуем деплой асинхронно, чтобы GitHub не получал таймаут
+                threading.Thread(target=run_deploy_script, daemon=True).start()
+                return jsonify({
+                    "status": "accepted",
+                    "message": "Deployment started"
+                }), 202
             else:
                 logger.info(f"Ignoring push to {ref} (not main/master branch)")
                 return jsonify({
@@ -160,4 +153,3 @@ if __name__ == "__main__":
     
     logger.info(f"Starting webhook server on {host}:{port}")
     app.run(host=host, port=port, debug=False)
-
