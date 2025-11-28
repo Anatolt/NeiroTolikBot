@@ -192,8 +192,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Удаляем лишние пробелы и знаки препинания в начале
             effective_text = re.sub(r'^[,\s:]+', '', effective_text)
         
-        if not bot_mentioned:
-            logger.info("Group chat message without bot mention, ignoring")
+        # Проверяем, является ли сообщение ответом на сообщение бота
+        is_reply_to_bot = False
+        if message.reply_to_message and message.reply_to_message.from_user:
+            # Проверяем, что ответ направлен на сообщение от бота
+            if message.reply_to_message.from_user.id == context.bot.id:
+                is_reply_to_bot = True
+                logger.info("Message is a reply to bot's message, processing")
+        
+        if not bot_mentioned and not is_reply_to_bot:
+            logger.info("Group chat message without bot mention or reply to bot, ignoring")
             return
         
         logger.info(f"Group chat message, extracted text: '{effective_text}'")
