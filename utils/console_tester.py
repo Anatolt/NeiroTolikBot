@@ -1,15 +1,18 @@
 """Простой консольный тестер для NeiroTolikBot.
 
-Позволяет отправлять запросы к OpenRouter без Telegram и проводить
-смоук-тесты:
-1) Проверка базовой генерации.
-2) Проверка переключения модели.
-3) Проверка сохранения и использования памяти.
+Позволяет:
+1) Прогонять смоук-тесты OpenRouter (генерация/переключение/память).
+2) Проверять текстовые ответы команд /help и /models офлайн, без сети.
+3) Общаться с ботом из консоли в интерактивном режиме.
 
-Использование:
-    python utils/console_tester.py --run-tests \
-        --api-key "<OPENROUTER_KEY>" --model anthropic/claude-3-haiku
+Примеры запуска:
+    # Полные смоук-тесты (нужен ключ OpenRouter)
+    python utils/console_tester.py --run-tests --api-key "<OPENROUTER_KEY>"
 
+    # Только офлайн-проверка команд /help и /models
+    python utils/console_tester.py --run-command-tests
+
+    # Интерактивный режим
     python utils/console_tester.py --interactive --api-key "<OPENROUTER_KEY>"
 """
 
@@ -18,8 +21,10 @@ import asyncio
 import logging
 import os
 import sys
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import List, Tuple
+from unittest.mock import AsyncMock, patch
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -30,6 +35,7 @@ if str(ROOT_DIR) not in sys.path:
 from config import BOT_CONFIG
 from services.generation import check_model_availability, generate_text, init_client
 from services.memory import add_message, clear_memory, get_history, init_db
+from handlers.commands import help_command, models_command
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,91 @@ def configure_bot(api_key: str | None = None, system_prompt: str | None = None) 
 
     init_db()
     init_client()
+
+
+@dataclass
+class FakeUser:
+    id: str
+    first_name: str = "Console"
+
+    def mention_markdown_v2(self) -> str:  # pragma: no cover - утилита для форматирования
+        return f"[{self.first_name}](tg://user?id={self.id})"
+
+
+@dataclass
+class FakeChat:
+    id: str
+
+
+@dataclass
+class FakeMessage:
+    replies: list[str] = field(default_factory=list)
+
+    async def reply_markdown_v2(self, text: str) -> None:
+        self.replies.append(text)
+
+    async def reply_text(self, text: str) -> None:
+        self.replies.append(text)
+
+
+@dataclass
+class FakeUpdate:
+    effective_user: FakeUser
+    effective_chat: FakeChat
+    message: FakeMessage
+
+
+class FakeContext:
+    """Пустой контекст для вызова обработчиков команд."""
+
+    bot_data: dict = {}
+
+
+async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool, str]]:
+    """Проверяет ответы команд /help и /models офлайн (без запроса к API)."""
+
+    results: List[Tuple[str, bool, str]] = []
+    user = FakeUser(id=user_id)
+    chat = FakeChat(id=chat_id)
+
+    # 1. /help
+    help_message = FakeMessage()
+    help_update = FakeUpdate(effective_user=user, effective_chat=chat, message=help_message)
+    await help_command(help_update, FakeContext())
+    help_ok = bool(help_message.replies) and "/models" in help_message.replies[0]
+    results.append(
+        ("Команда /help", help_ok, help_message.replies[0] if help_message.replies else "Нет ответа")
+    )
+
+    # 2. /models без обращения к OpenRouter — подставляем тестовые данные
+    fake_models = [
+        {"id": "test/ultra-free:free", "context_length": 200_000, "pricing": {"prompt": "0"}},
+        {"id": "test/large-context", "context_length": 150_000, "pricing": {"prompt": "0.002"}},
+        {"id": "test/coder-instruct", "context_length": 80_000, "pricing": {"prompt": "0.001"}},
+    ]
+
+    models_message = FakeMessage()
+    models_update = FakeUpdate(
+        effective_user=user,
+        effective_chat=chat,
+        message=models_message,
+    )
+
+    with patch("handlers.commands.init_client", return_value=None), patch(
+        "handlers.commands.fetch_models_data", AsyncMock(return_value=fake_models)
+    ):
+        await models_command(models_update, FakeContext())
+
+    models_ok = bool(models_message.replies) and "БЕСПЛАТНЫЕ МОДЕЛИ" in models_message.replies[0]
+    results.append(
+        (
+            "Команда /models (офлайн)",
+            models_ok,
+            models_message.replies[0][:400] if models_message.replies else "Нет ответа",
+        )
+    )
+
+    return results
 
 
 async def run_single_prompt(prompt: str, model: str, chat_id: str, user_id: str) -> str:
@@ -81,6 +172,42 @@ async def run_smoke_tests(
     )
 
     if not is_default_available:
+        # Продолжаем, но помечаем остальные проверки как пропущенные
+        results.append(
+            (
+                "Базовый ответ",
+                False,
+                "Пропущено из-за недоступности основной модели",
+            )
+        )
+        results.append(
+            (
+                "Доступность альтернативной модели",
+                False,
+                "Пропущено из-за недоступности основной модели",
+            )
+        )
+        results.append(
+            (
+                "Переключение модели",
+                False,
+                "Пропущено из-за недоступности основной модели",
+            )
+        )
+        results.append(
+            (
+                "Память диалога",
+                False,
+                "Пропущено из-за недоступности основной модели",
+            )
+        )
+        results.append(
+            (
+                "Размер истории",
+                False,
+                "Пропущено из-за недоступности основной модели",
+            )
+        )
         return results
 
     # 2. Базовая генерация
@@ -184,6 +311,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user-id", default="console_user", help="ID пользователя для тестов")
     parser.add_argument("--prompt", help="Отправить одиночный промпт вместо тестов")
     parser.add_argument("--run-tests", action="store_true", help="Запустить смоук-тесты")
+    parser.add_argument(
+        "--run-command-tests",
+        action="store_true",
+        help="Запустить офлайн-тесты команд /help и /models (без OpenRouter)",
+    )
     parser.add_argument("--interactive", action="store_true", help="Интерактивный режим")
     return parser.parse_args()
 
@@ -194,17 +326,27 @@ async def main() -> None:
     )
 
     args = parse_args()
-    configure_bot(api_key=args.api_key)
+
+    if args.run_command_tests:
+        command_results = await run_command_tests(args.chat_id, args.user_id)
+        print_results(command_results)
+
+    need_api = args.run_tests or args.prompt or args.interactive
+
+    if need_api:
+        configure_bot(api_key=args.api_key)
 
     if args.run_tests:
         results = await run_smoke_tests(
             args.model, args.alternate_model, args.chat_id, args.user_id
         )
         print_results(results)
-    elif args.prompt:
+
+    if args.prompt:
         response = await run_single_prompt(args.prompt, args.model, args.chat_id, args.user_id)
         print(response)
-    else:
+
+    if args.interactive:
         await interactive_chat(args.model, args.chat_id, args.user_id)
 
 

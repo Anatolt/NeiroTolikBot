@@ -120,7 +120,7 @@ NeiroTolikBot/
 
 ## Консольное тестирование без Telegram
 
-Для быстрого прогона смоук-тестов и проверки ключа OpenRouter можно использовать скрипт `utils/console_tester.py`.
+Для быстрого прогона смоук-тестов и проверки ключа OpenRouter можно использовать скрипт `utils/console_tester.py`. Он также умеет офлайн проверять команды /help и /models.
 
 ### Запуск смоук-тестов
 
@@ -134,6 +134,16 @@ python utils/console_tester.py --run-tests --api-key "<OPENROUTER_API_KEY>"
 - переключение на альтернативную модель;
 - работу памяти и наличие истории в SQLite.
 
+Если основная модель недоступна, отчёт помечает остальные шаги как пропущенные, но тестирование не прерывается.
+
+### Офлайн-проверка команд
+
+Можно прогнать ответы на /help и /models без доступа к OpenRouter:
+
+```bash
+python utils/console_tester.py --run-command-tests
+```
+
 ### Интерактивный режим
 
 ```bash
@@ -143,4 +153,5 @@ python utils/console_tester.py --interactive --api-key "<OPENROUTER_API_KEY>"
 Дополнительные параметры:
 - `--model` — основная модель (по умолчанию `anthropic/claude-3-haiku`);
 - `--alternate-model` — модель для проверки переключения;
-- `--prompt` — отправить один промпт и вывести ответ.
+- `--prompt` — отправить один промпт и вывести ответ;
+- `--run-command-tests` — запустить офлайн-тесты команд /help и /models.
