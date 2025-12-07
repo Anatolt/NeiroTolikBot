@@ -3,7 +3,7 @@ import asyncio
 import re
 from typing import List, Dict, Optional
 from config import BOT_CONFIG
-from services.generation import generate_text, _resolve_user_model_keyword
+from services.generation import generate_text, _resolve_user_model_keyword, fetch_models_data, _is_free_pricing
 
 logger = logging.getLogger(__name__)
 
@@ -61,51 +61,87 @@ async def parse_models_from_message(text: str) -> List[str]:
     return resolved_models
 
 
-def select_default_consilium_models() -> List[str]:
+async def select_default_consilium_models() -> List[str]:
     """
-    Выбирает 3 модели по умолчанию для консилиума.
-    Приоритет: DEFAULT_MODEL, chatgpt, claude, затем из FALLBACK_MODELS
+    Выбирает 3 разные бесплатные модели по умолчанию для консилиума.
+    Если бесплатных моделей недостаточно, использует фолбеки.
     """
-    default_models = []
+    selected_models = []
     seen = set()
+    excluded = set(BOT_CONFIG.get("EXCLUDED_MODELS", []))
     
-    # Добавляем модель по умолчанию
-    default_model = BOT_CONFIG.get("DEFAULT_MODEL")
-    if default_model and default_model not in seen:
-        default_models.append(default_model)
-        seen.add(default_model)
+    # Получаем список моделей из каталога или API
+    models_data = BOT_CONFIG.get("MODEL_CATALOG") or []
     
-    # Добавляем ChatGPT
-    chatgpt = BOT_CONFIG.get("MODELS", {}).get("chatgpt")
-    if chatgpt and chatgpt not in seen:
-        default_models.append(chatgpt)
-        seen.add(chatgpt)
+    # Если каталог пуст, пытаемся получить модели из API
+    if not models_data:
+        try:
+            models_data = await fetch_models_data()
+            if models_data:
+                # Фильтруем исключенные модели
+                models_data = [m for m in models_data if m.get("id") not in excluded]
+        except Exception as e:
+            logger.warning(f"Failed to fetch models data: {e}")
+            models_data = []
     
-    # Добавляем Claude (если еще не добавлен)
-    claude = BOT_CONFIG.get("MODELS", {}).get("claude")
-    if claude and claude not in seen:
-        default_models.append(claude)
-        seen.add(claude)
+    # Фильтруем бесплатные модели
+    free_models = []
+    for model in models_data:
+        model_id = model.get("id", "")
+        if model_id in excluded:
+            continue
+        
+        # Проверяем, является ли модель бесплатной
+        pricing = model.get("pricing", {}) if isinstance(model.get("pricing"), dict) else {}
+        prompt_price = pricing.get("prompt")
+        is_free = ":free" in model_id or _is_free_pricing(prompt_price)
+        
+        if is_free:
+            free_models.append(model)
     
-    # Если еще не набрали 3 модели, добавляем из FALLBACK_MODELS
-    fallback_models = BOT_CONFIG.get("FALLBACK_MODELS", [])
-    for model in fallback_models:
-        if len(default_models) >= 3:
-            break
-        if model not in seen and model not in BOT_CONFIG.get("EXCLUDED_MODELS", []):
-            default_models.append(model)
-            seen.add(model)
+    # Сортируем бесплатные модели по длине контекста (по убыванию)
+    free_models.sort(key=lambda m: m.get("context_length", 0) or 0, reverse=True)
     
-    # Если все еще меньше 3, добавляем другие модели из MODELS
-    if len(default_models) < 3:
-        for key, model in BOT_CONFIG.get("MODELS", {}).items():
-            if len(default_models) >= 3:
+    # Выбираем 3 разные бесплатные модели
+    for model in free_models:
+        model_id = model.get("id", "")
+        if model_id and model_id not in seen:
+            selected_models.append(model_id)
+            seen.add(model_id)
+            if len(selected_models) >= 3:
                 break
-            if model not in seen and model not in BOT_CONFIG.get("EXCLUDED_MODELS", []):
-                default_models.append(model)
+    
+    # Если бесплатных моделей недостаточно, добавляем фолбеки
+    if len(selected_models) < 3:
+        fallback_models = BOT_CONFIG.get("FALLBACK_MODELS", [])
+        for model in fallback_models:
+            if len(selected_models) >= 3:
+                break
+            if model and model not in seen and model not in excluded:
+                selected_models.append(model)
                 seen.add(model)
     
-    return default_models[:3]  # Возвращаем максимум 3 модели
+    # Если все еще недостаточно, добавляем другие бесплатные модели из MODELS
+    if len(selected_models) < 3:
+        for key, model_id in BOT_CONFIG.get("MODELS", {}).items():
+            if len(selected_models) >= 3:
+                break
+            if model_id and model_id not in seen and model_id not in excluded:
+                # Проверяем, является ли модель бесплатной
+                if ":free" in model_id:
+                    selected_models.append(model_id)
+                    seen.add(model_id)
+    
+    # Если все еще недостаточно, добавляем любые модели из MODELS (не только бесплатные)
+    if len(selected_models) < 3:
+        for key, model_id in BOT_CONFIG.get("MODELS", {}).items():
+            if len(selected_models) >= 3:
+                break
+            if model_id and model_id not in seen and model_id not in excluded:
+                selected_models.append(model_id)
+                seen.add(model_id)
+    
+    return selected_models[:3]  # Возвращаем максимум 3 модели
 
 
 async def generate_single_model_response(

@@ -199,7 +199,7 @@ async def consilium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # Если модели не указаны, выбираем по умолчанию
     if not models:
-        models = select_default_consilium_models()
+        models = await select_default_consilium_models()
         if not models:
             await message.reply_text("❌ Не удалось выбрать модели для консилиума. Попробуйте указать модели явно.")
             return
