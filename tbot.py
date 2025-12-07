@@ -16,14 +16,17 @@ from handlers.commands import (
     models_specialized_command,
     new_dialog,
     start,
+    admin_command,
 )
 from handlers.messages import handle_message
 from services.generation import (
     init_client,
     check_model_availability,
     choose_best_free_model,
+    refresh_models_from_api,
 )
 from services.memory import init_db
+from datetime import datetime
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -33,6 +36,15 @@ BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = os.getenv("CUSTOM_SYSTEM_PROMPT", "You are a helpful assistant.")
+BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
+BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# Необязательная настройка кастомных запасных моделей (через запятую)
+fallback_models_env = os.getenv("FALLBACK_MODELS")
+if fallback_models_env:
+    BOT_CONFIG["FALLBACK_MODELS"] = [
+        model.strip() for model in fallback_models_env.split(",") if model.strip()
+    ]
 
 # Параметры экономного потребления памяти
 UPDATE_QUEUE_MAXSIZE = int(os.getenv("UPDATE_QUEUE_MAXSIZE", "50"))
@@ -52,7 +64,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 async def check_default_model():
-    """Выбирает лучшую бесплатную модель и проверяет ее доступность."""
+    """Выбирает лучшую доступную модель и обновляет алиасы."""
+    try:
+        await refresh_models_from_api()
+    except Exception as e:
+        logger.error(f"Failed to refresh models from API: {str(e)}")
+
     try:
         best_free_model = await choose_best_free_model()
         if best_free_model:
@@ -61,10 +78,20 @@ async def check_default_model():
     except Exception as e:
         logger.error(f"Failed to select best free model: {str(e)}")
 
-    is_available = await check_model_availability(BOT_CONFIG["DEFAULT_MODEL"])
-    if not is_available:
+    # Проверяем доступность модели по умолчанию и резервных
+    models_to_probe = []
+    for candidate in [BOT_CONFIG.get("DEFAULT_MODEL"), *BOT_CONFIG.get("FALLBACK_MODELS", [])]:
+        if candidate and candidate not in models_to_probe:
+            models_to_probe.append(candidate)
+
+    for candidate in models_to_probe:
+        if await check_model_availability(candidate):
+            BOT_CONFIG["DEFAULT_MODEL"] = candidate
+            logger.info(f"Using available default model: {candidate}")
+            break
+    else:
         logger.warning(
-            f"Default model {BOT_CONFIG['DEFAULT_MODEL']} is not available. Falling back to gpt-3.5-turbo"
+            f"No available models from the list {models_to_probe}. Falling back to openai/gpt-3.5-turbo"
         )
         BOT_CONFIG["DEFAULT_MODEL"] = "openai/gpt-3.5-turbo"
 
@@ -92,6 +119,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("new", new_dialog))
     application.add_handler(CommandHandler("clear", clear_memory_command))
+    application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("models", models_command))
     application.add_handler(CommandHandler("models_free", models_free_command))

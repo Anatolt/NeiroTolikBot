@@ -9,9 +9,12 @@ from services.generation import (
     build_models_messages,
     generate_image,
     generate_text,
+    _resolve_user_model_keyword,
 )
-from services.memory import add_message
+from services.memory import add_message, get_history
+from services.web_search import search_web
 from config import BOT_CONFIG
+from handlers.commands import ADMIN_SESSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +89,22 @@ async def route_request(text: str, bot_username: str | None) -> tuple[str, str, 
     if text_lower.startswith(("нарисуй", "сгенерируй картинку", "создай изображение")):
         return "image", text, None
     
+    # Проверка на запрос веб-поиска
+    # "погугли ..." или "поищи ..."
+    if text_lower.startswith(("погугли", "поищи")):
+        # Извлекаем запрос после триггера
+        search_query = text
+        if text_lower.startswith("погугли"):
+            search_query = text[8:].strip()  # Убираем "погугли "
+        elif text_lower.startswith("поищи"):
+            search_query = text[6:].strip()  # Убираем "поищи "
+        
+        # Если запрос пустой, это означает "погугли" без запроса - используем предыдущее сообщение
+        if not search_query:
+            return "search_previous", "", None
+        else:
+            return "search", search_query, None
+    
     # Определение модели для текстового запроса
     model = None
     prompt = text
@@ -97,6 +116,7 @@ async def route_request(text: str, bot_username: str | None) -> tuple[str, str, 
     match = re.search(model_pattern, text_lower, re.IGNORECASE)
     if match:
         extracted_model = match.group(1)
+        resolved = _resolve_user_model_keyword(extracted_model)
         # Удаляем указание модели из текста (включая возможные пробелы и запятые после)
         # Используем более точный паттерн для удаления
         prompt = re.sub(
@@ -110,39 +130,36 @@ async def route_request(text: str, bot_username: str | None) -> tuple[str, str, 
         prompt = re.sub(r'^[,\s]+', '', prompt)
         # Если промпт не пустой, возвращаем его с моделью
         if prompt:
-            return "text", prompt, extracted_model
+            return "text", prompt, resolved or extracted_model
         # Если промпт пустой, но модель указана, все равно возвращаем модель
         # (пользователь может хотеть просто проверить связь с моделью)
-        return "text", "", extracted_model
+        return "text", "", resolved or extracted_model
     
     # Проверка на указание модели в начале
-    model_keywords = {
-        "chatgpt": "openai/gpt-3.5-turbo",
-        "claude": "anthropic/claude-3-haiku",
-        "claude_opus": "anthropic/claude-3-opus",
-        "claude_sonnet": "anthropic/claude-3-sonnet",
-        "deepseek": "deepseek/deepseek-r1-distill-qwen-14b",
-        "mistral": "mistralai/mistral-large-2407",
-        "llama": "meta-llama/llama-3.1-8b-instruct:free",
-        "meta": "meta-llama/llama-3.1-8b-instruct:free",
-        "qwen": "qwen/qwen2.5-vl-3b-instruct:free",
-        "fimbulvetr": "sao10k/fimbulvetr-11b-v2",
-        "sao10k": "sao10k/fimbulvetr-11b-v2"
-    }
+    model_keywords = {k.lower(): v for k, v in BOT_CONFIG.get("MODELS", {}).items()}
     
     # Проверяем наличие модели в начале запроса
     words = prompt.lower().split()
     if words and words[0] in model_keywords:
-        model = model_keywords[words[0]]
+        resolved = _resolve_user_model_keyword(words[0]) or model_keywords[words[0]]
+        model = resolved
         prompt = " ".join(words[1:]).strip()
         return "text", prompt, model
     
     # Проверяем наличие модели в конце запроса
     for keyword, model_name in model_keywords.items():
         if prompt.lower().endswith(f"через {keyword}"):
-            model = model_name
+            model = _resolve_user_model_keyword(keyword) or model_name
             prompt = prompt[:-len(f"через {keyword}")].strip()
             return "text", prompt, model
+
+    # Префиксное совпадение с витриной моделей (например, "nvidia ..." или "kwaipilot ...")
+    first_word = words[0] if words else ""
+    if first_word:
+        resolved = _resolve_user_model_keyword(first_word)
+        if resolved:
+            prompt = " ".join(words[1:]).strip()
+            return "text", prompt, resolved
     
     return "text", prompt, None
 
@@ -161,6 +178,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = message.text
     chat_type = message.chat.type
     effective_text = text
+
+    # Проверка ввода пароля администратора
+    if context.user_data.get("awaiting_admin_pass"):
+        context.user_data["awaiting_admin_pass"] = False
+        if text.strip() == BOT_CONFIG.get("ADMIN_PASS"):
+            context.user_data["is_admin"] = True
+            ADMIN_SESSIONS.add((str(message.chat_id), str(message.from_user.id)))
+            await message.reply_text(
+                f"Админ-режим активирован. Бот перезапускался в {BOT_CONFIG.get('BOOT_TIME')}."
+            )
+        else:
+            await message.reply_text("Неверный пароль.")
+        return
     
     # Добавляем подробное логирование для всех сообщений
     logger.info(f"Received message: '{text}' from user {message.from_user.username if message.from_user else 'unknown'} in chat {message.chat_id}")
@@ -244,6 +274,93 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_photo(image_url)
         else:
             await message.reply_text("Не удалось сгенерировать изображение.")
+    elif request_type == "search":
+        # Поиск с указанным запросом
+        logger.info(f"Processing web search request: '{content}'")
+        chat_id = str(message.chat_id)
+        user_id = str(message.from_user.id)
+        model_name = model or BOT_CONFIG["DEFAULT_MODEL"]
+        
+        await message.reply_text("Ищу информацию в интернете...")
+        
+        # Выполняем поиск
+        search_results = await search_web(content)
+        
+        # Формируем промпт с результатами поиска
+        prompt_with_search = f"Пользователь попросил найти информацию: '{content}'. Вот результаты поиска в интернете:\n\n{search_results}\n\nПожалуйста, проанализируй найденную информацию и дай развернутый ответ на запрос пользователя."
+        
+        # Добавляем сообщение в историю
+        add_message(chat_id, user_id, "user", model_name, f"погугли {content}")
+        
+        # Генерируем ответ с результатами поиска
+        response, used_model = await generate_text(
+            prompt_with_search, model_name, chat_id, user_id, search_results=search_results
+        )
+        
+        # Добавляем ответ в историю
+        add_message(chat_id, user_id, "assistant", used_model, response)
+        
+        # Отправляем ответ
+        await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
+    
+    elif request_type == "search_previous":
+        # Поиск по предыдущему сообщению - возвращаемся к последнему ответу модели
+        logger.info("Processing web search for previous message")
+        chat_id = str(message.chat_id)
+        user_id = str(message.from_user.id)
+        model_name = model or BOT_CONFIG["DEFAULT_MODEL"]
+        
+        # Получаем историю сообщений
+        history = get_history(chat_id, user_id, limit=10)
+        
+        # Ищем последнее сообщение пользователя и последний ответ ассистента
+        previous_user_message = None
+        previous_assistant_message = None
+        
+        for msg in history:
+            if msg["role"] == "assistant" and not previous_assistant_message:
+                previous_assistant_message = msg["text"]
+            elif msg["role"] == "user" and msg["text"].lower() not in ["погугли", "поищи"] and not previous_user_message:
+                previous_user_message = msg["text"]
+                # Если нашли и пользователя и ассистента, можно выходить
+                if previous_assistant_message:
+                    break
+        
+        if not previous_user_message or not previous_assistant_message:
+            await message.reply_text("Не найдено предыдущего сообщения для поиска. Пожалуйста, укажите, что искать, например: 'погугли погода в Москве'")
+            return
+        
+        await message.reply_text(f"Ищу дополнительную информацию по вашему предыдущему вопросу: '{previous_user_message}'...")
+        
+        # Просим модель сформулировать поисковый запрос на основе предыдущего вопроса и ответа
+        search_prompt = f"Пользователь ранее спросил: '{previous_user_message}'\n\nЯ ответил: '{previous_assistant_message}'\n\nТеперь пользователь просит найти дополнительную информацию в интернете. Сформулируй краткий поисковый запрос (2-5 слов) для поиска в интернете, который поможет дополнить или уточнить мой ответ. Ответь только поисковым запросом, без дополнительных слов."
+        
+        # Получаем поисковый запрос от модели (без добавления в историю, чтобы не засорять)
+        search_query_response, _used_model = await generate_text(search_prompt, model_name, None, None)
+        search_query = search_query_response.strip().strip('"').strip("'")
+        
+        logger.info(f"Model formulated search query: '{search_query}'")
+        
+        # Выполняем поиск
+        search_results = await search_web(search_query)
+        
+        # Формируем финальный промпт
+        final_prompt = f"Пользователь ранее спросил: '{previous_user_message}'\n\nЯ ранее ответил: '{previous_assistant_message}'\n\nТеперь я нашел дополнительную информацию в интернете по запросу '{search_query}':\n\n{search_results}\n\nПожалуйста, проанализируй найденную информацию и дополни мой предыдущий ответ актуальными данными из интернета."
+        
+        # Добавляем сообщение в историю
+        add_message(chat_id, user_id, "user", model_name, "погугли")
+        
+        # Генерируем финальный ответ
+        response, used_model = await generate_text(
+            final_prompt, model_name, chat_id, user_id, search_results=search_results
+        )
+        
+        # Добавляем ответ в историю
+        add_message(chat_id, user_id, "assistant", used_model, response)
+        
+        # Отправляем ответ
+        await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
+    
     elif request_type == "text":
         logger.info(f"Processing text generation request: '{content}', model: {model}")
         # Добавляем сообщение в историю
@@ -253,13 +370,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "user", model_name, content)
         
         # Генерируем ответ
-        response = await generate_text(content, model_name, chat_id, user_id)
+        response, used_model = await generate_text(content, model_name, chat_id, user_id)
         
         # Добавляем ответ в историю
-        add_message(chat_id, user_id, "assistant", model_name, response)
+        add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        await message.reply_text(f"Ответ от {model_name}:\n\n{response}")
+        await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
     else:
         logger.warning(f"Unknown request type: {request_type}")
         await message.reply_text("Извините, не удалось обработать ваш запрос.")

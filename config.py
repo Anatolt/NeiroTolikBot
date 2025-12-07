@@ -23,7 +23,11 @@ BOT_CONFIG = {
         "MAX_ATTEMPTS": 60,
         "POLLING_INTERVAL": 2
     },
-    
+
+    # Admin
+    "ADMIN_PASS": None,
+    "BOOT_TIME": None,
+
     # Available Models
     "MODELS": {
         "claude": "anthropic/claude-3-haiku",  # Основная модель по умолчанию
@@ -31,8 +35,8 @@ BOT_CONFIG = {
         "claude_sonnet": "anthropic/claude-3-sonnet",  # Для баланса скорости и качества
         "chatgpt": "openai/gpt-4-turbo",  # ChatGPT модель
         "mistral": "mistralai/mistral-large-2407",  # Альтернативная модель
-        "llama": "meta-llama/llama-3.1-8b-instruct:free",  # Бесплатная модель
-        "meta": "meta-llama/llama-3.1-8b-instruct:free",  # Бесплатная модель
+        "llama": "meta-llama/llama-3.3-70b-instruct:free",  # Бесплатная модель (актуальная)
+        "meta": "meta-llama/llama-3.3-70b-instruct:free",  # Бесплатная модель (актуальная)
         "deepseek": "deepseek/deepseek-r1-distill-qwen-14b",  # Модель DeepSeek
         "qwen": "qwen/qwen2.5-vl-3b-instruct:free",  # Модель Qwen
         "fimbulvetr": "sao10k/fimbulvetr-11b-v2",  # Модель Fimbulvetr
@@ -44,6 +48,18 @@ BOT_CONFIG = {
         "MAX_TOKENS": 1000,
         "TEMPERATURE": 0.7
     },
+
+    # Исключенные модели (например, требующие аудио)
+    "EXCLUDED_MODELS": [
+        "google/gemini-2.0-flash-exp:free",
+    ],
+
+    # Ordered list of fallback моделей, если запрошенная недоступна
+    "FALLBACK_MODELS": [
+        "openai/gpt-4o-mini",
+        "openai/gpt-3.5-turbo",
+        "anthropic/claude-3-haiku",
+    ],
     
     # Keywords for routing
     "KEYWORDS": {

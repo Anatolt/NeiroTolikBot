@@ -18,6 +18,8 @@ MODELS_HINT_TEXT = (
     "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
 )
 
+ADMIN_SESSIONS: set[tuple[str, str]] = set()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
     user = update.effective_user
@@ -66,6 +68,23 @@ async def clear_memory_command(update: Update, context: ContextTypes.DEFAULT_TYP
         f"{user_mention}, память полностью очищена\\.\n"
         f"Начинаю диалог с чистого листа\\."
     )
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Запрашивает пароль и включает режим админа."""
+    if not BOT_CONFIG.get("ADMIN_PASS"):
+        await update.message.reply_text("Пароль администратора не задан.")
+        return
+
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    if (chat_id, user_id) in ADMIN_SESSIONS or context.user_data.get("is_admin"):
+        await update.message.reply_text(
+            f"Уже в режиме админа. Бот запущен: {BOT_CONFIG.get('BOOT_TIME')}"
+        )
+        return
+
+    context.user_data["awaiting_admin_pass"] = True
+    await update.message.reply_text("Введите пароль администратора:")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help - справка по командам."""

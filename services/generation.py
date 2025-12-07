@@ -2,6 +2,7 @@ import logging
 import json
 import asyncio
 import aiohttp
+from datetime import datetime
 from openai import AsyncOpenAI
 from config import BOT_CONFIG
 from services.memory import get_history, get_user_summary
@@ -206,16 +207,20 @@ async def build_models_messages(
     )
 
 
-async def choose_best_free_model() -> str | None:
+async def choose_best_free_model(models_data: list[dict] | None = None) -> str | None:
     """Определяет самую мощную бесплатную модель на основе длины контекста."""
-    models_data = await fetch_models_data()
+    if models_data is None:
+        models_data = await fetch_models_data()
     if not models_data:
         return None
 
     free_models = [
         model
         for model in models_data
-        if ":free" in model.get("id", "") or _is_free_pricing(model.get("pricing", {}).get("prompt"))
+        if (
+            (":free" in model.get("id", "") or _is_free_pricing(model.get("pricing", {}).get("prompt")))
+            and model.get("id") not in BOT_CONFIG.get("EXCLUDED_MODELS", [])
+        )
     ]
 
     if not free_models:
@@ -227,20 +232,280 @@ async def choose_best_free_model() -> str | None:
     logger.info(f"Selected best free model: {best_model_id}")
     return best_model_id
 
-async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: str = None) -> str:
-    """Генерация текста с помощью OpenRouter API."""
+
+def _sorted_models_by_context(models_data: list[dict]) -> list[dict]:
+    """Сортирует модели по длине контекста по убыванию."""
+    return sorted(models_data, key=lambda m: m.get("context_length", 0) or 0, reverse=True)
+
+
+def _pick_model_by_keywords(
+    models_data: list[dict],
+    include: list[str],
+    exclude: list[str] | None = None,
+) -> str | None:
+    """Возвращает id модели, содержащей нужные ключевые слова, с максимальным контекстом."""
+    exclude = exclude or []
+    for model in _sorted_models_by_context(models_data):
+        model_id = model.get("id", "")
+        if model_id in BOT_CONFIG.get("EXCLUDED_MODELS", []):
+            continue
+        model_id_lower = model_id.lower()
+        if all(key.lower() in model_id_lower for key in include) and not any(
+            bad.lower() in model_id_lower for bad in exclude
+        ):
+            return model_id
+    return None
+
+
+def _resolve_user_model_keyword(keyword: str) -> str | None:
+    """
+    Разрешает пользовательский ключ (первая часть запроса) в id модели.
+    Правила:
+    - точное совпадение id
+    - префиксное совпадение (берём модель с максимальным контекстом)
+    - алиасы из BOT_CONFIG["MODELS"]
+    """
+    if not keyword:
+        return None
+    kw = keyword.strip().lower()
+    catalog: list[dict] = BOT_CONFIG.get("MODEL_CATALOG") or []
+    if not catalog:
+        logger.info("Model catalog is empty, refreshing from API")
+        try:
+            # best effort, не падаем при ошибках
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(refresh_models_from_api())
+            else:
+                loop.run_until_complete(refresh_models_from_api())
+            catalog = BOT_CONFIG.get("MODEL_CATALOG") or []
+        except Exception as e:
+            logger.error(f"Failed to refresh model catalog: {e}")
+
+    # Точное совпадение
+    for model in catalog:
+        mid = (model.get("id") or "").lower()
+        if mid == kw and model.get("id") not in BOT_CONFIG.get("EXCLUDED_MODELS", []):
+            return model.get("id")
+
+    # Префиксное совпадение — выбираем с максимальным контекстом
+    prefix_matches = [
+        m
+        for m in catalog
+        if (m.get("id") or "").lower().startswith(kw)
+        and m.get("id") not in BOT_CONFIG.get("EXCLUDED_MODELS", [])
+    ]
+    if prefix_matches:
+        best = max(prefix_matches, key=lambda m: m.get("context_length", 0) or 0)
+        return best.get("id")
+
+    # Алиасы
+    alias = BOT_CONFIG.get("MODELS", {}).get(kw)
+    if alias and alias not in BOT_CONFIG.get("EXCLUDED_MODELS", []):
+        return alias
+
+    return None
+
+
+def _build_alias_map(models_data: list[dict]) -> dict[str, str]:
+    """Формирует динамическое соответствие алиасов и реальных id моделей."""
+    alias_map: dict[str, str] = {}
+
+    alias_map["claude_opus"] = _pick_model_by_keywords(models_data, ["anthropic/claude", "opus"])
+    alias_map["claude_sonnet"] = _pick_model_by_keywords(models_data, ["anthropic/claude", "sonnet"])
+    alias_map["claude"] = alias_map.get("claude_sonnet") or alias_map.get("claude_opus") or _pick_model_by_keywords(
+        models_data, ["anthropic/claude"]
+    )
+
+    # ChatGPT семейство
+    alias_map["chatgpt"] = (
+        _pick_model_by_keywords(models_data, ["openai/gpt-4o"], exclude=["mini"])
+        or _pick_model_by_keywords(models_data, ["openai/gpt-4o"])
+        or _pick_model_by_keywords(models_data, ["openai/gpt-4"], exclude=["mini"])
+        or _pick_model_by_keywords(models_data, ["openai/gpt-3.5-turbo"])
+    )
+
+    alias_map["mistral"] = _pick_model_by_keywords(models_data, ["mistral"])
+
+    llama_variant = _pick_model_by_keywords(models_data, ["meta-llama/llama", "instruct"]) or _pick_model_by_keywords(
+        models_data, ["meta-llama/llama"]
+    )
+    alias_map["llama"] = llama_variant
+    alias_map["meta"] = llama_variant
+
+    deepseek_variant = _pick_model_by_keywords(models_data, ["deepseek", "r1"]) or _pick_model_by_keywords(
+        models_data, ["deepseek"]
+    )
+    alias_map["deepseek"] = deepseek_variant
+
+    alias_map["qwen"] = _pick_model_by_keywords(models_data, ["qwen", "instruct"]) or _pick_model_by_keywords(
+        models_data, ["qwen"]
+    )
+
+    fimbulvetr_variant = _pick_model_by_keywords(models_data, ["fimbulvetr"])
+    alias_map["fimbulvetr"] = fimbulvetr_variant
+    alias_map["sao10k"] = fimbulvetr_variant
+
+    return {k: v for k, v in alias_map.items() if v}
+
+
+def _build_fallback_models(default_model: str | None, alias_map: dict[str, str]) -> list[str]:
+    """Формирует список запасных моделей с учетом алиасов."""
+    order = [
+        default_model,
+        alias_map.get("chatgpt"),
+        alias_map.get("claude"),
+        alias_map.get("mistral"),
+        alias_map.get("llama"),
+        alias_map.get("deepseek"),
+        alias_map.get("qwen"),
+    ]
+    result: list[str] = []
+    for candidate in order:
+        if candidate and candidate not in result:
+            result.append(candidate)
+    # если список пустой, вернем предыдущее значение из конфигурации
+    if not result:
+        result.extend(BOT_CONFIG.get("FALLBACK_MODELS", []))
+    return result
+
+
+async def refresh_models_from_api() -> dict[str, str]:
+    """
+    Перезапрашивает список моделей из OpenRouter и обновляет алиасы/фолбэки.
+    Возвращает словарь новых алиасов.
+    """
+    models_data = await fetch_models_data()
+    if not models_data:
+        logger.warning("Failed to refresh models from API: empty list")
+        return {}
+
+    # Сохраняем сырую витрину (фильтруя исключенные)
+    BOT_CONFIG["MODEL_CATALOG"] = [
+        m for m in models_data if m.get("id") not in BOT_CONFIG.get("EXCLUDED_MODELS", [])
+    ]
+
+    alias_map = _build_alias_map(models_data)
+
+    # Обновляем алиасы в конфиге
+    merged_aliases = BOT_CONFIG.get("MODELS", {}).copy()
+    merged_aliases.update(alias_map)
+    BOT_CONFIG["MODELS"] = merged_aliases
+
+    # Пересчитываем модель по умолчанию и список фолбэков
+    best_free_model = await choose_best_free_model(models_data)
+    if best_free_model:
+        BOT_CONFIG["DEFAULT_MODEL"] = best_free_model
+
+    BOT_CONFIG["FALLBACK_MODELS"] = _build_fallback_models(BOT_CONFIG.get("DEFAULT_MODEL"), BOT_CONFIG["MODELS"])
+
+    logger.info(
+        "Models refreshed from API. Default: %s, aliases updated: %s",
+        BOT_CONFIG.get("DEFAULT_MODEL"),
+        {k: BOT_CONFIG['MODELS'][k] for k in alias_map.keys()},
+    )
+
+    return alias_map
+
+def _is_model_not_found_error(error: Exception) -> bool:
+    """Определяем ошибки недоступной модели (404 / No endpoints)."""
+    message = str(error).lower()
+    status = getattr(error, "status_code", None)
+    return (
+        status == 404
+        or "no endpoints found" in message
+        or "model_not_found" in message
+        or "not found" in message
+    )
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    """Определяем ошибки ограничения скорости (429 / temporarily rate-limited)."""
+    message = str(error).lower()
+    status = getattr(error, "status_code", None)
+    return status == 429 or "rate limit" in message or "temporarily rate-limited" in message
+
+def _is_audio_required_error(error: Exception) -> bool:
+    """Определяем ошибку, когда модель требует аудио."""
+    message = str(error).lower()
+    return "requires that either input content or output modality contain audio" in message
+
+
+def _is_conversation_order_error(error: Exception) -> bool:
+    """Определяем ошибку, связанную с порядком сообщений (assistant не может быть первым)."""
+    message = str(error).lower()
+    return "assistant messages cannot be the first non-system message" in message
+
+
+def _build_models_to_try(requested_model: str | None) -> list[str]:
+    """Формирует последовательность моделей для запроса с учетом фолбэков."""
+    models_to_try: list[str] = []
+    for candidate in [
+        requested_model,
+        BOT_CONFIG.get("DEFAULT_MODEL"),
+        *BOT_CONFIG.get("FALLBACK_MODELS", []),
+    ]:
+        if candidate and candidate not in BOT_CONFIG.get("EXCLUDED_MODELS", []) and candidate not in models_to_try:
+            models_to_try.append(candidate)
+    return models_to_try
+
+
+def _normalize_history(history: list[dict]) -> list[dict]:
+    """
+    Делает так, чтобы первым не-системным сообщением был user.
+    Убирает ведущие assistant-сообщения в хронологическом порядке.
+    """
+    normalized: list[dict] = []
+    found_user = False
+    for msg in reversed(history):  # oldest -> newest
+        role = msg.get("role")
+        if not found_user:
+            if role == "assistant":
+                continue
+            if role == "user":
+                found_user = True
+        normalized.append(msg)
+    return normalized
+
+
+async def generate_text(
+    prompt: str,
+    model: str,
+    chat_id: str = None,
+    user_id: str = None,
+    search_results: str = None,
+) -> tuple[str, str]:
+    """
+    Генерация текста с помощью OpenRouter API.
+    
+    Args:
+        prompt: Текст запроса пользователя
+        model: Имя модели для использования
+        chat_id: ID чата (опционально)
+        user_id: ID пользователя (опционально)
+        search_results: Результаты веб-поиска для добавления в контекст (опционально)
+    """
     client = init_client()
     
     messages = []
     
-    # Добавляем системный промпт
+    # Добавляем информацию о текущей дате и времени
+    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    datetime_info = f"Текущая дата и время: {current_datetime}"
+    
+    # Добавляем системный промпт с датой/временем
+    system_content = datetime_info
     if BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"]:
-        messages.append({"role": "system", "content": BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"]})
+        system_content += f"\n\n{BOT_CONFIG['CUSTOM_SYSTEM_PROMPT']}"
+    messages.append({"role": "system", "content": system_content})
     
     # Если указаны chat_id и user_id, добавляем историю сообщений
+    history = []
     if chat_id and user_id:
         # Получаем историю сообщений
         history = get_history(chat_id, user_id, limit=10)
+        history = _normalize_history(history)
         
         # Получаем суммаризацию истории, если есть
         summary = get_user_summary(chat_id, user_id)
@@ -254,6 +519,13 @@ async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: s
             if msg["role"] in ["user", "assistant"]:
                 messages.append({"role": msg["role"], "content": msg["text"]})
     
+    # Добавляем результаты поиска, если они есть
+    if search_results:
+        messages.append({
+            "role": "system", 
+            "content": f"Дополнительная информация из интернета:\n\n{search_results}"
+        })
+    
     # Добавляем текущий запрос пользователя, если он еще не в истории
     current_prompt_in_history = False
     if chat_id and user_id:
@@ -263,35 +535,94 @@ async def generate_text(prompt: str, model: str, chat_id: str = None, user_id: s
     if not current_prompt_in_history:
         messages.append({"role": "user", "content": prompt})
 
-    try:
-        logger.info(f"Sending text generation request to OpenRouter with model: {model}, prompt: {prompt}")
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=BOT_CONFIG["TEXT_GENERATION"]["MAX_TOKENS"],
-            temperature=BOT_CONFIG["TEXT_GENERATION"]["TEMPERATURE"]
-        )
-        
-        # Проверяем структуру ответа
-        if not response or not hasattr(response, 'choices') or not response.choices:
-            logger.error("Empty or invalid response from OpenRouter API")
-            return "Извините, произошла ошибка при получении ответа от API. Пожалуйста, попробуйте позже."
-            
-        # Безопасное извлечение результата
+    # Список моделей, которые будем пробовать по очереди
+    models_to_try: list[str] = _build_models_to_try(model)
+    tried_models: set[str] = set()
+    last_error: Exception | None = None
+    refreshed = False
+    idx = 0
+    while idx < len(models_to_try):
+        candidate_model = models_to_try[idx]
+        if candidate_model in tried_models:
+            idx += 1
+            continue
+        tried_models.add(candidate_model)
         try:
-            result = response.choices[0].message.content.strip()
-            if not result:
-                logger.error("Empty content in response from OpenRouter API")
-                return "Извините, получен пустой ответ от API. Пожалуйста, попробуйте позже."
-            logger.info(f"Received response from OpenRouter: {result[:100]}...")
-            return result
-        except (AttributeError, IndexError) as e:
-            logger.error(f"Error extracting content from response: {str(e)}")
-            return "Извините, произошла ошибка при обработке ответа от API. Пожалуйста, попробуйте позже."
-            
-    except Exception as e:
-        logger.error(f"Error generating text: {str(e)}")
-        return f"Произошла ошибка при генерации текста: {str(e)}"
+            logger.info(
+                f"Sending text generation request to OpenRouter with model: {candidate_model}, prompt: {prompt}"
+            )
+            response = await client.chat.completions.create(
+                model=candidate_model,
+                messages=messages,
+                max_tokens=BOT_CONFIG["TEXT_GENERATION"]["MAX_TOKENS"],
+                temperature=BOT_CONFIG["TEXT_GENERATION"]["TEMPERATURE"],
+            )
+
+            # Проверяем структуру ответа
+            if not response or not hasattr(response, "choices") or not response.choices:
+                logger.error("Empty or invalid response from OpenRouter API")
+                return (
+                    "Извините, произошла ошибка при получении ответа от API. Пожалуйста, попробуйте позже.",
+                    candidate_model,
+                )
+
+            try:
+                result = response.choices[0].message.content.strip()
+                if not result:
+                    logger.error("Empty content in response from OpenRouter API")
+                    return (
+                        "Извините, получен пустой ответ от API. Пожалуйста, попробуйте позже.",
+                        candidate_model,
+                    )
+                logger.info(f"Received response from OpenRouter: {result[:100]}...")
+                return result, candidate_model
+            except (AttributeError, IndexError) as e:
+                logger.error(f"Error extracting content from response: {str(e)}")
+                return (
+                    "Извините, произошла ошибка при обработке ответа от API. Пожалуйста, попробуйте позже.",
+                    candidate_model,
+                )
+
+        except Exception as e:
+            last_error = e
+            logger.error(f"Error generating text with model {candidate_model}: {str(e)}")
+            # Если модель недоступна, пробуем обновить список моделей и попытаться еще раз
+            if _is_model_not_found_error(e):
+                logger.warning(f"Model {candidate_model} unavailable, trying fallback if available")
+                if not refreshed:
+                    refreshed = True
+                    await refresh_models_from_api()
+                    models_to_try = _build_models_to_try(model)
+                    idx = 0
+                    continue
+                idx += 1
+                continue
+            # Если ограничение по rate limit, пробуем следующую модель
+            if _is_rate_limit_error(e):
+                logger.warning(f"Model {candidate_model} rate-limited, trying next available model")
+                idx += 1
+                continue
+            # Если модель требует аудио, пропускаем её
+            if _is_audio_required_error(e):
+                logger.warning(f"Model {candidate_model} requires audio, skipping to next model")
+                idx += 1
+                continue
+            # Если провайдер ругается на порядок сообщений, пробуем следующую модель
+            if _is_conversation_order_error(e):
+                logger.warning(f"Model {candidate_model} rejected conversation order, trying next model")
+                idx += 1
+                continue
+            # Для других ошибок не пытаемся бесконечно менять модели
+            break
+        idx += 1
+
+    fallback_message = (
+        f"Произошла ошибка при генерации текста: {str(last_error)}"
+        if last_error
+        else "Произошла ошибка при генерации текста: неизвестная ошибка"
+    )
+    failed_model = model or BOT_CONFIG.get("DEFAULT_MODEL") or "unknown"
+    return fallback_message, failed_model
 
 async def generate_image(prompt: str) -> str:
     """Генерация изображения с помощью PiAPI.ai."""
