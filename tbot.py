@@ -4,7 +4,7 @@ import asyncio
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from config import BOT_CONFIG
-from utils.helpers import post_init
+from utils.helpers import post_init, notify_admins_on_startup
 from handlers.commands import (
     clear_memory_command,
     help_command,
@@ -140,6 +140,9 @@ async def main() -> None:
     await application.start()
     # Указываем явно, какие типы обновлений получать (включая сообщения из групп)
     await application.updater.start_polling(allowed_updates=["message", "edited_message", "callback_query"])
+    
+    # Отправляем уведомления админам о перезапуске
+    await notify_admins_on_startup(application)
     
     # Держим бота в активном состоянии
     try:

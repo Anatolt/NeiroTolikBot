@@ -22,7 +22,7 @@ from services.consilium import (
     extract_prompt_from_consilium_message,
 )
 from config import BOT_CONFIG
-from handlers.commands import ADMIN_SESSIONS
+from services.memory import add_admin, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data["awaiting_admin_pass"] = False
         if text.strip() == BOT_CONFIG.get("ADMIN_PASS"):
             context.user_data["is_admin"] = True
-            ADMIN_SESSIONS.add((str(message.chat_id), str(message.from_user.id)))
+            chat_id = str(message.chat_id)
+            user_id = str(message.from_user.id)
+            add_admin(chat_id, user_id)
             await message.reply_text(
                 f"Админ-режим активирован. Бот перезапускался в {BOT_CONFIG.get('BOOT_TIME')}."
             )

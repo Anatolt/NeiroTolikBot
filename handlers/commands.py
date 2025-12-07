@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
 from config import BOT_CONFIG
-from services.memory import start_new_dialog, clear_memory, add_message
+from services.memory import start_new_dialog, clear_memory, add_message, add_admin, is_admin, get_all_admins
 from services.generation import CATEGORY_TITLES, build_models_messages
 from services.consilium import (
     parse_models_from_message,
@@ -25,8 +25,6 @@ MODELS_HINT_TEXT = (
     "• /models_all — полный список (может быть длинным)\n\n"
     "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
 )
-
-ADMIN_SESSIONS: set[tuple[str, str]] = set()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
@@ -85,7 +83,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     chat_id = str(update.effective_chat.id)
     user_id = str(update.effective_user.id)
-    if (chat_id, user_id) in ADMIN_SESSIONS or context.user_data.get("is_admin"):
+    if is_admin(chat_id, user_id) or context.user_data.get("is_admin"):
         await update.message.reply_text(
             f"Уже в режиме админа. Бот запущен: {BOT_CONFIG.get('BOOT_TIME')}"
         )

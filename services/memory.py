@@ -43,6 +43,17 @@ def init_db():
     )
     ''')
     
+    # Создание таблицы админов
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        timestamp DATETIME NOT NULL,
+        UNIQUE(chat_id, user_id)
+    )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -148,6 +159,61 @@ def get_user_summary(chat_id: str, user_id: str) -> Optional[str]:
     conn.close()
     
     return result[0] if result else None
+
+def add_admin(chat_id: str, user_id: str) -> None:
+    """Добавление администратора в базу данных."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Используем INSERT OR REPLACE для обновления существующей записи
+    cursor.execute(
+        "INSERT OR REPLACE INTO admins (chat_id, user_id, timestamp) VALUES (?, ?, ?)",
+        (chat_id, user_id, datetime.now().isoformat())
+    )
+    
+    conn.commit()
+    conn.close()
+
+def is_admin(chat_id: str, user_id: str) -> bool:
+    """Проверка, является ли пользователь администратором."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT 1 FROM admins WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id)
+    )
+    
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result is not None
+
+def get_all_admins() -> List[Dict[str, Any]]:
+    """Получение списка всех администраторов."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT chat_id, user_id FROM admins")
+    rows = cursor.fetchall()
+    
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+def remove_admin(chat_id: str, user_id: str) -> None:
+    """Удаление администратора из базы данных."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "DELETE FROM admins WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id)
+    )
+    
+    conn.commit()
+    conn.close()
 
 # Инициализация базы данных при импорте модуля
 init_db() 
