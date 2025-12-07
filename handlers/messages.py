@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from telegram import Update
 from telegram.constants import ChatType
 from telegram.ext import ContextTypes
@@ -13,6 +14,13 @@ from services.generation import (
 )
 from services.memory import add_message, get_history
 from services.web_search import search_web
+from services.consilium import (
+    parse_models_from_message,
+    select_default_consilium_models,
+    generate_consilium_responses,
+    format_consilium_results,
+    extract_prompt_from_consilium_message,
+)
 from config import BOT_CONFIG
 from handlers.commands import ADMIN_SESSIONS
 
@@ -84,6 +92,10 @@ async def route_request(text: str, bot_username: str | None) -> tuple[str, str, 
 
     if text_lower in model_aliases:
         return "models_category", model_aliases[text_lower], None
+
+    # Проверка на запрос консилиума
+    if text_lower.startswith("консилиум"):
+        return "consilium", text, None
 
     # Проверка на запрос изображения
     if text_lower.startswith(("нарисуй", "сгенерируй картинку", "создай изображение")):
@@ -360,6 +372,87 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # Отправляем ответ
         await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
+    
+    elif request_type == "consilium":
+        logger.info(f"Processing consilium request: '{content}'")
+        chat_id = str(message.chat_id)
+        user_id = str(message.from_user.id)
+        
+        # Парсим модели из сообщения
+        models = await parse_models_from_message(content)
+        
+        # Если модели не указаны, выбираем по умолчанию
+        if not models:
+            models = select_default_consilium_models()
+            if not models:
+                await message.reply_text("❌ Не удалось выбрать модели для консилиума. Попробуйте указать модели явно.")
+                return
+        
+        # Извлекаем промпт
+        prompt = extract_prompt_from_consilium_message(content)
+        
+        if not prompt:
+            await message.reply_text("❌ Не указан вопрос для консилиума. Используйте: консилиум: ваш вопрос")
+            return
+        
+        # Отправляем сообщение о начале генерации
+        status_message = await message.reply_text(f"🏥 Генерирую ответы от {len(models)} моделей...")
+        
+        # Добавляем запрос в историю (один раз)
+        if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
+            add_message(chat_id, user_id, "user", models[0], prompt)
+        
+        # Засекаем время
+        start_time = time.time()
+        
+        # Генерируем ответы параллельно
+        results = await generate_consilium_responses(prompt, models, chat_id, user_id)
+        
+        # Вычисляем время выполнения
+        execution_time = time.time() - start_time
+        
+        # Форматируем результаты
+        formatted_results = format_consilium_results(results, execution_time)
+        
+        # Удаляем сообщение о статусе
+        try:
+            await status_message.delete()
+        except Exception as e:
+            logger.warning(f"Could not delete status message: {e}")
+        
+        # Сохраняем ответы в историю (если включено)
+        if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
+            for result in results:
+                if result.get("success") and result.get("response"):
+                    add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
+        
+        # Разбиваем длинные ответы на части (Telegram лимит ~4096 символов)
+        max_length = 4000
+        if len(formatted_results) > max_length:
+            # Разбиваем на части
+            parts = []
+            current_part = ""
+            lines = formatted_results.split("\n")
+            
+            for line in lines:
+                if len(current_part) + len(line) + 1 > max_length:
+                    if current_part:
+                        parts.append(current_part)
+                    current_part = line + "\n"
+                else:
+                    current_part += line + "\n"
+            
+            if current_part:
+                parts.append(current_part)
+            
+            # Отправляем части
+            for i, part in enumerate(parts):
+                if i == 0:
+                    await message.reply_text(part)
+                else:
+                    await message.reply_text(f"*(продолжение {i+1}/{len(parts)})*\n\n{part}", parse_mode="Markdown")
+        else:
+            await message.reply_text(formatted_results)
     
     elif request_type == "text":
         logger.info(f"Processing text generation request: '{content}', model: {model}")

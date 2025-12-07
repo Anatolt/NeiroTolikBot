@@ -17,6 +17,7 @@ from handlers.commands import (
     new_dialog,
     start,
     admin_command,
+    consilium_command,
 )
 from handlers.messages import handle_message
 from services.generation import (
@@ -127,6 +128,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("models_large_context", models_large_context_command))
     application.add_handler(CommandHandler("models_specialized", models_specialized_command))
     application.add_handler(CommandHandler("models_all", models_all_command))
+    application.add_handler(CommandHandler("consilium", consilium_command))
     
     # Обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

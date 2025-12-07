@@ -48,6 +48,14 @@ BOT_CONFIG = {
         "MAX_TOKENS": 1000,
         "TEMPERATURE": 0.7
     },
+    
+    # Consilium Settings
+    "CONSILIUM_CONFIG": {
+        "DEFAULT_MODELS_COUNT": 3,
+        "TIMEOUT_PER_MODEL": 60,  # секунд
+        "SAVE_TO_HISTORY": True,  # сохранять ли ответы в историю
+        "SHOW_TIMING": True,  # показывать время выполнения
+    },
 
     # Исключенные модели (например, требующие аудио)
     "EXCLUDED_MODELS": [

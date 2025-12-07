@@ -1,10 +1,18 @@
 import logging
+import time
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
 from config import BOT_CONFIG
-from services.memory import start_new_dialog, clear_memory
+from services.memory import start_new_dialog, clear_memory, add_message
 from services.generation import CATEGORY_TITLES, build_models_messages
+from services.consilium import (
+    parse_models_from_message,
+    select_default_consilium_models,
+    generate_consilium_responses,
+    format_consilium_results,
+    extract_prompt_from_consilium_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +106,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"❓ /help \\- Показать эту справку\n"
         f"🤖 /models \\- Подсказка по спискам моделей\n"
         f"   /models_free, /models_paid, /models_large_context, /models_specialized\n"
-        f"   /models_all — полный список моделей\n\n"
+        f"   /models_all — полный список моделей\n"
+        f"🏥 /consilium \\- Получить ответы от нескольких моделей одновременно\n\n"
         f"Также вы можете:\n"
         f"• Задавать вопросы боту\n"
         f"• Просить нарисовать картинки\n"
         f"• Указывать модель для ответа \\(например, 'chatgpt расскажи о погоде'\\)\n"
+        f"• Использовать консилиум: 'консилиум: ваш вопрос' или 'консилиум через chatgpt, claude: вопрос'\n"
         f"• Написать 'модели' или 'models' для просмотра списка моделей"
     )
     
@@ -149,3 +159,113 @@ async def models_specialized_command(update: Update, context: ContextTypes.DEFAU
 async def models_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает полный список моделей по категориям."""
     await _send_models(update, ["free", "large_context", "specialized", "paid"], MODELS_HINT_TEXT, max_items=None)
+
+
+async def consilium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /consilium - одновременный запрос к нескольким моделям."""
+    message = update.message
+    if not message or not message.text:
+        return
+    
+    user = update.effective_user
+    chat_id = str(update.effective_chat.id)
+    user_id = str(user.id)
+    
+    # Извлекаем текст команды (убираем "/consilium")
+    command_text = message.text[10:].strip() if message.text.startswith("/consilium") else message.text.strip()
+    
+    # Если команда без аргументов, показываем справку
+    if not command_text:
+        help_text = (
+            "🏥 Консилиум моделей\n\n"
+            "Получите ответы от нескольких моделей одновременно.\n\n"
+            "Использование:\n"
+            "• /consilium ваш вопрос — автоматический выбор 3 моделей\n"
+            "• /consilium через chatgpt, claude, deepseek: ваш вопрос — указанные модели\n"
+            "• консилиум: ваш вопрос — через текст\n"
+            "• консилиум через chatgpt, claude: ваш вопрос — через текст с моделями\n\n"
+            "Примеры:\n"
+            "• /consilium какая погода в Москве?\n"
+            "• /consilium через chatgpt, claude: объясни квантовую физику"
+        )
+        await message.reply_text(help_text)
+        return
+    
+    # Формируем полный текст для парсинга
+    full_text = f"консилиум {command_text}"
+    
+    # Парсим модели из сообщения
+    models = await parse_models_from_message(full_text)
+    
+    # Если модели не указаны, выбираем по умолчанию
+    if not models:
+        models = select_default_consilium_models()
+        if not models:
+            await message.reply_text("❌ Не удалось выбрать модели для консилиума. Попробуйте указать модели явно.")
+            return
+    
+    # Извлекаем промпт
+    prompt = extract_prompt_from_consilium_message(full_text)
+    
+    if not prompt:
+        await message.reply_text("❌ Не указан вопрос для консилиума. Используйте: /consilium ваш вопрос")
+        return
+    
+    # Отправляем сообщение о начале генерации
+    status_message = await message.reply_text(f"🏥 Генерирую ответы от {len(models)} моделей...")
+    
+    # Добавляем запрос в историю (один раз)
+    if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
+        add_message(chat_id, user_id, "user", models[0], prompt)
+    
+    # Засекаем время
+    start_time = time.time()
+    
+    # Генерируем ответы параллельно
+    results = await generate_consilium_responses(prompt, models, chat_id, user_id)
+    
+    # Вычисляем время выполнения
+    execution_time = time.time() - start_time
+    
+    # Форматируем результаты
+    formatted_results = format_consilium_results(results, execution_time)
+    
+    # Удаляем сообщение о статусе
+    try:
+        await status_message.delete()
+    except Exception as e:
+        logger.warning(f"Could not delete status message: {e}")
+    
+    # Сохраняем ответы в историю (если включено)
+    if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
+        for result in results:
+            if result.get("success") and result.get("response"):
+                add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
+    
+    # Разбиваем длинные ответы на части (Telegram лимит ~4096 символов)
+    max_length = 4000
+    if len(formatted_results) > max_length:
+        # Разбиваем на части
+        parts = []
+        current_part = ""
+        lines = formatted_results.split("\n")
+        
+        for line in lines:
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part)
+                current_part = line + "\n"
+            else:
+                current_part += line + "\n"
+        
+        if current_part:
+            parts.append(current_part)
+        
+        # Отправляем части
+        for i, part in enumerate(parts):
+            if i == 0:
+                await message.reply_text(part)
+            else:
+                await message.reply_text(f"*(продолжение {i+1}/{len(parts)})*\n\n{part}", parse_mode="Markdown")
+    else:
+        await message.reply_text(formatted_results)
