@@ -120,8 +120,10 @@ async def generate_single_model_response(
     Возвращает словарь с результатом или ошибкой.
     """
     try:
+        # Добавляем инструкции о краткости и без markdown
+        enhanced_prompt = prompt + "\n\nВАЖНО: Отвечай кратко (2-4 предложения, максимум 100-150 слов). Не используй markdown разметку (**, ###, ``` и т.д.) - пиши простым текстом. Отвечай по существу вопроса."
         response, used_model = await asyncio.wait_for(
-            generate_text(prompt, model, chat_id, user_id),
+            generate_text(enhanced_prompt, model, chat_id, user_id),
             timeout=timeout
         )
         return {
@@ -198,7 +200,50 @@ async def generate_consilium_responses(
     return processed_results
 
 
-def format_consilium_results(results: List[Dict], execution_time: float = None) -> str:
+def _remove_markdown(text: str) -> str:
+    """
+    Удаляет markdown разметку из текста.
+    
+    Args:
+        text: Текст с markdown разметкой
+    
+    Returns:
+        Текст без markdown разметки
+    """
+    if not text:
+        return text
+    
+    # Удаляем заголовки (###, ##, #)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    
+    # Удаляем жирный текст (**текст**, __текст__)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    
+    # Удаляем курсив (*текст*, _текст_)
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', text)
+    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'\1', text)
+    
+    # Удаляем код блоки (```код```)
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    
+    # Удаляем инлайн код (`код`)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    
+    # Удаляем горизонтальные линии (---, ***)
+    text = re.sub(r'^[-*]{3,}$', '', text, flags=re.MULTILINE)
+    
+    # Удаляем ссылки [текст](url)
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    
+    # Удаляем лишние пробелы и переносы строк
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = text.strip()
+    
+    return text
+
+
+def format_consilium_results(results: List[Dict], execution_time: float = None) -> List[str]:
     """
     Форматирует результаты консилиума для отправки пользователю.
     
@@ -207,33 +252,37 @@ def format_consilium_results(results: List[Dict], execution_time: float = None) 
         execution_time: Время выполнения в секундах (опционально)
     
     Returns:
-        Отформатированная строка с результатами
+        Список сообщений для отправки (первое - заголовок, остальные - ответы моделей)
     """
     if not results:
-        return "❌ Не удалось получить ответы от моделей."
+        return ["❌ Не удалось получить ответы от моделей."]
     
-    formatted = "🏥 Консилиум моделей\n\n"
+    messages = []
     
+    # Первое сообщение - заголовок с временем выполнения
+    header = "🏥 Консилиум моделей"
+    if execution_time is not None and BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SHOW_TIMING", True):
+        header += f"\n⏱ Время выполнения: {execution_time:.1f} сек"
+    messages.append(header)
+    
+    # Каждый ответ модели - отдельное сообщение
     for result in results:
         model = result.get("model", "unknown")
         success = result.get("success", False)
         
-        formatted += f"🤖 {model}:\n"
-        
         if success:
             response = result.get("response", "")
             if response:
-                formatted += f"{response}\n\n"
+                # Удаляем markdown и форматируем
+                clean_response = _remove_markdown(response)
+                messages.append(f"🤖 {model}:\n\n{clean_response}")
             else:
-                formatted += "⚠️ Получен пустой ответ\n\n"
+                messages.append(f"🤖 {model}:\n\n⚠️ Получен пустой ответ")
         else:
             error = result.get("error", "Неизвестная ошибка")
-            formatted += f"❌ Ошибка: {error}\n\n"
+            messages.append(f"🤖 {model}:\n\n❌ Ошибка: {error}")
     
-    if execution_time is not None and BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SHOW_TIMING", True):
-        formatted += f"---\n⏱ Время выполнения: {execution_time:.1f} сек"
-    
-    return formatted
+    return messages
 
 
 def extract_prompt_from_consilium_message(text: str) -> str:

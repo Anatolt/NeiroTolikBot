@@ -411,8 +411,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Вычисляем время выполнения
         execution_time = time.time() - start_time
         
-        # Форматируем результаты
-        formatted_results = format_consilium_results(results, execution_time)
+        # Форматируем результаты (теперь возвращает список сообщений)
+        formatted_messages = format_consilium_results(results, execution_time)
         
         # Удаляем сообщение о статусе
         try:
@@ -426,33 +426,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if result.get("success") and result.get("response"):
                     add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
         
-        # Разбиваем длинные ответы на части (Telegram лимит ~4096 символов)
+        # Отправляем каждое сообщение отдельно
         max_length = 4000
-        if len(formatted_results) > max_length:
-            # Разбиваем на части
-            parts = []
-            current_part = ""
-            lines = formatted_results.split("\n")
-            
-            for line in lines:
-                if len(current_part) + len(line) + 1 > max_length:
-                    if current_part:
-                        parts.append(current_part)
-                    current_part = line + "\n"
-                else:
-                    current_part += line + "\n"
-            
-            if current_part:
-                parts.append(current_part)
-            
-            # Отправляем части
-            for i, part in enumerate(parts):
-                if i == 0:
-                    await message.reply_text(part)
-                else:
-                    await message.reply_text(f"*(продолжение {i+1}/{len(parts)})*\n\n{part}", parse_mode="Markdown")
-        else:
-            await message.reply_text(formatted_results)
+        for msg in formatted_messages:
+            # Если сообщение слишком длинное, разбиваем его
+            if len(msg) > max_length:
+                # Разбиваем на части
+                parts = []
+                current_part = ""
+                lines = msg.split("\n")
+                
+                for line in lines:
+                    if len(current_part) + len(line) + 1 > max_length:
+                        if current_part:
+                            parts.append(current_part)
+                        current_part = line + "\n"
+                    else:
+                        current_part += line + "\n"
+                
+                if current_part:
+                    parts.append(current_part)
+                
+                # Отправляем части
+                for i, part in enumerate(parts):
+                    if i == 0:
+                        await message.reply_text(part)
+                    else:
+                        await message.reply_text(f"*(продолжение {i+1}/{len(parts)})*\n\n{part}", parse_mode="Markdown")
+            else:
+                await message.reply_text(msg)
     
     elif request_type == "text":
         logger.info(f"Processing text generation request: '{content}', model: {model}")
