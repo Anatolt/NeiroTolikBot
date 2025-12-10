@@ -26,6 +26,25 @@ from services.memory import add_admin, is_admin
 
 logger = logging.getLogger(__name__)
 
+async def _notify_context_guard(message, context_info: dict | None) -> None:
+    if not context_info:
+        return
+
+    notices = []
+    if context_info.get("summary_text"):
+        notices.append("⚠️ Контекст переполнен — делаю саммари истории.")
+    elif context_info.get("trimmed_from_context"):
+        notices.append("⚠️ Контекст переполнен — скрываю самые старые сообщения из запроса.")
+
+    for warn in context_info.get("warnings", []):
+        notices.append(f"ℹ️ {warn}")
+
+    for note in notices:
+        try:
+            await message.reply_text(note)
+        except Exception as e:
+            logger.warning(f"Failed to send context notice: {e}")
+
 async def get_capabilities() -> list[str]:
     """Получение и форматирование информации о доступных моделях."""
     try:
@@ -307,9 +326,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "user", model_name, f"погугли {content}")
         
         # Генерируем ответ с результатами поиска
-        response, used_model = await generate_text(
+        response, used_model, context_info = await generate_text(
             prompt_with_search, model_name, chat_id, user_id, search_results=search_results
         )
+
+        await _notify_context_guard(message, context_info)
         
         # Добавляем ответ в историю
         add_message(chat_id, user_id, "assistant", used_model, response)
@@ -350,7 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         search_prompt = f"Пользователь ранее спросил: '{previous_user_message}'\n\nЯ ответил: '{previous_assistant_message}'\n\nТеперь пользователь просит найти дополнительную информацию в интернете. Сформулируй краткий поисковый запрос (2-5 слов) для поиска в интернете, который поможет дополнить или уточнить мой ответ. Ответь только поисковым запросом, без дополнительных слов."
         
         # Получаем поисковый запрос от модели (без добавления в историю, чтобы не засорять)
-        search_query_response, _used_model = await generate_text(search_prompt, model_name, None, None)
+        search_query_response, _used_model, _context_info = await generate_text(search_prompt, model_name, None, None)
         search_query = search_query_response.strip().strip('"').strip("'")
         
         logger.info(f"Model formulated search query: '{search_query}'")
@@ -365,9 +386,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "user", model_name, "погугли")
         
         # Генерируем финальный ответ
-        response, used_model = await generate_text(
+        response, used_model, context_info = await generate_text(
             final_prompt, model_name, chat_id, user_id, search_results=search_results
         )
+
+        await _notify_context_guard(message, context_info)
         
         # Добавляем ответ в историю
         add_message(chat_id, user_id, "assistant", used_model, response)
@@ -467,7 +490,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "user", model_name, content)
         
         # Генерируем ответ
-        response, used_model = await generate_text(content, model_name, chat_id, user_id)
+        response, used_model, context_info = await generate_text(content, model_name, chat_id, user_id)
+
+        await _notify_context_guard(message, context_info)
         
         # Добавляем ответ в историю
         add_message(chat_id, user_id, "assistant", used_model, response)

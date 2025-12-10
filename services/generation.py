@@ -3,9 +3,10 @@ import json
 import asyncio
 import aiohttp
 from datetime import datetime
+from typing import Any, Dict, List, Tuple
 from openai import AsyncOpenAI
 from config import BOT_CONFIG
-from services.memory import get_history, get_user_summary
+from services.memory import get_history, get_user_summary, save_summary
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,37 @@ CATEGORY_TITLES = {
     "specialized": "СПЕЦИАЛИЗИРОВАННЫЕ МОДЕЛИ:",
     "paid": "ПЛАТНЫЕ МОДЕЛИ:",
 }
+
+def _get_context_guard_config() -> dict:
+    defaults = {
+        "DEFAULT_CONTEXT_LENGTH": 32768,
+        "WARNING_RATIO": 0.8,
+        "HARD_RATIO": 0.95,
+        "OVERFLOW_STRATEGY": "summarize",
+        "MIN_MESSAGES_TO_SUMMARIZE": 4,
+        "SUMMARIZATION_MODEL": None,
+        "SUMMARY_MAX_TOKENS": 256,
+    }
+    guard_cfg = BOT_CONFIG.get("CONTEXT_GUARD", {}) or {}
+    return {**defaults, **guard_cfg}
+
+def _get_context_length_for_model(model_id: str | None) -> int:
+    guard_cfg = _get_context_guard_config()
+    catalog: List[Dict[str, Any]] = BOT_CONFIG.get("MODEL_CATALOG") or []
+    if model_id:
+        for model in catalog:
+            if (model.get("id") or "").lower() == model_id.lower():
+                return int(model.get("context_length") or guard_cfg["DEFAULT_CONTEXT_LENGTH"])
+    return guard_cfg["DEFAULT_CONTEXT_LENGTH"]
+
+def _estimate_messages_size(messages: List[Dict[str, str]]) -> Tuple[int, int]:
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+    estimated_tokens = max(1, round(total_chars / 4))
+    return estimated_tokens, total_chars
 
 def init_client():
     """Инициализация клиента OpenRouter после загрузки конфигурации."""
@@ -468,6 +500,152 @@ def _normalize_history(history: list[dict]) -> list[dict]:
         normalized.append(msg)
     return normalized
 
+async def _summarize_removed_messages(
+    chat_id: str,
+    user_id: str,
+    removed_fragments: List[str],
+    model: str | None,
+) -> str | None:
+    if not removed_fragments:
+        return None
+
+    guard_cfg = _get_context_guard_config()
+    summarizer_model = guard_cfg.get("SUMMARIZATION_MODEL") or model or BOT_CONFIG.get("DEFAULT_MODEL")
+    summary_prompt = (
+        "Суммаризируй удаленные части переписки в 4-6 предложениях, сохранив ключевые факты, решения и договоренности. "
+        "Пиши на русском."
+    )
+    history_block = "\n".join(removed_fragments)
+
+    try:
+        client = init_client()
+        response = await client.chat.completions.create(
+            model=summarizer_model,
+            messages=[
+                {"role": "system", "content": "Ты помощник, который сжимает историю диалога без потери сути."},
+                {"role": "user", "content": f"История для сжатия:\n\n{history_block}\n\n{summary_prompt}"},
+            ],
+            max_tokens=guard_cfg.get("SUMMARY_MAX_TOKENS", 256),
+            temperature=0.2,
+        )
+        summary = response.choices[0].message.content.strip()
+        save_summary(chat_id, user_id, summary)
+        return summary
+    except Exception as e:
+        logger.error(f"Failed to summarize removed history: {e}")
+        return None
+
+async def _ensure_context_fits(
+    messages: List[Dict[str, str]],
+    model: str | None,
+    chat_id: str | None,
+    user_id: str | None,
+) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+    guard_cfg = _get_context_guard_config()
+    context_limit = _get_context_length_for_model(model)
+    tokens, chars = _estimate_messages_size(messages)
+    info: Dict[str, Any] = {
+        "usage_tokens": tokens,
+        "usage_chars": chars,
+        "context_limit": context_limit,
+        "warnings": [],
+        "trimmed_from_context": 0,
+        "summary_text": None,
+    }
+
+    ratio = tokens / context_limit if context_limit else 0
+    if ratio >= guard_cfg.get("WARNING_RATIO", 0.8):
+        warning = (
+            f"Контекст почти заполнен ({tokens}/{context_limit} токенов, {ratio:.0%}). "
+            "При необходимости буду обрезать или суммировать историю."
+        )
+        info["warnings"].append(warning)
+        logger.warning(warning)
+
+    target_limit = int(context_limit * guard_cfg.get("HARD_RATIO", 0.95))
+    if not context_limit or tokens <= target_limit:
+        return messages, info
+
+    # Попытка обрезать самые старые сообщения
+    removed_texts: List[str] = []
+    removable_indexes = [i for i in range(len(messages) - 1) if messages[i].get("role") in {"user", "assistant"}]
+    removable_indexes = list(sorted(removable_indexes, reverse=True))
+    while tokens > target_limit and removable_indexes:
+        idx = removable_indexes.pop(0)
+        removed_texts.append(messages[idx].get("content", ""))
+        messages.pop(idx)
+        info["trimmed_from_context"] += 1
+        tokens, chars = _estimate_messages_size(messages)
+
+    info["usage_tokens"] = tokens
+    info["usage_chars"] = chars
+
+    if tokens <= target_limit:
+        if info["trimmed_from_context"]:
+            logger.info(f"Trimmed {info['trimmed_from_context']} messages from prepared context")
+            info["warnings"].append("Часть старых сообщений скрыта из запроса, чтобы освободить место в контексте.")
+        return messages, info
+
+    if guard_cfg.get("OVERFLOW_STRATEGY", "truncate") == "summarize" and chat_id and user_id:
+        summary = await _summarize_removed_messages(chat_id, user_id, removed_texts, model)
+        if summary:
+            info["summary_text"] = summary
+            summary_message = {"role": "system", "content": f"Краткая история диалога: {summary}"}
+            insertion_index = 1 if messages else 0
+            messages.insert(insertion_index, summary_message)
+            tokens, chars = _estimate_messages_size(messages)
+            info["usage_tokens"] = tokens
+            info["usage_chars"] = chars
+            logger.info("Context overflow: replaced part of history with summary")
+            info["warnings"].append("Сделана саммаризация части истории, чтобы уложиться в лимит контекста.")
+    return messages, info
+
+async def _prepare_messages(
+    prompt: str,
+    model: str | None,
+    chat_id: str | None,
+    user_id: str | None,
+    search_results: str | None,
+) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+    messages: List[Dict[str, str]] = []
+
+    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    system_content = f"Текущая дата и время: {current_datetime}"
+    if BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"]:
+        system_content += f"\n\n{BOT_CONFIG['CUSTOM_SYSTEM_PROMPT']}"
+    messages.append({"role": "system", "content": system_content})
+
+    history: List[Dict[str, Any]] = []
+    if chat_id and user_id:
+        history = get_history(chat_id, user_id, limit=10)
+        history = _normalize_history(history)
+
+        summary = get_user_summary(chat_id, user_id)
+        if summary:
+            messages.append({"role": "system", "content": f"Краткая история нашего общения: {summary}"})
+
+        for msg in reversed(history):
+            if msg["role"] in ["user", "assistant"]:
+                messages.append({"role": msg["role"], "content": msg["text"]})
+
+    if search_results:
+        messages.append({
+            "role": "system",
+            "content": f"Дополнительная информация из интернета:\n\n{search_results}"
+        })
+
+    current_prompt_in_history = False
+    if chat_id and user_id:
+        if history and history[0].get("role") == "user" and history[0].get("text") == prompt:
+            current_prompt_in_history = True
+
+    if not current_prompt_in_history:
+        messages.append({"role": "user", "content": prompt})
+
+    messages, guard_info = await _ensure_context_fits(messages, model, chat_id, user_id)
+
+    return messages, guard_info
+
 
 async def generate_text(
     prompt: str,
@@ -475,7 +653,9 @@ async def generate_text(
     chat_id: str = None,
     user_id: str = None,
     search_results: str = None,
-) -> tuple[str, str]:
+    prepared_messages: List[Dict[str, str]] | None = None,
+    context_info: Dict[str, Any] | None = None,
+) -> tuple[str, str, Dict[str, Any]]:
     """
     Генерация текста с помощью OpenRouter API.
     
@@ -488,52 +668,11 @@ async def generate_text(
     """
     client = init_client()
     
-    messages = []
-    
-    # Добавляем информацию о текущей дате и времени
-    current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    datetime_info = f"Текущая дата и время: {current_datetime}"
-    
-    # Добавляем системный промпт с датой/временем
-    system_content = datetime_info
-    if BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"]:
-        system_content += f"\n\n{BOT_CONFIG['CUSTOM_SYSTEM_PROMPT']}"
-    messages.append({"role": "system", "content": system_content})
-    
-    # Если указаны chat_id и user_id, добавляем историю сообщений
-    history = []
-    if chat_id and user_id:
-        # Получаем историю сообщений
-        history = get_history(chat_id, user_id, limit=10)
-        history = _normalize_history(history)
-        
-        # Получаем суммаризацию истории, если есть
-        summary = get_user_summary(chat_id, user_id)
-        
-        # Если есть суммаризация, добавляем ее как системное сообщение
-        if summary:
-            messages.append({"role": "system", "content": f"Краткая история нашего общения: {summary}"})
-        
-        # Добавляем историю сообщений в контекст
-        for msg in reversed(history):
-            if msg["role"] in ["user", "assistant"]:
-                messages.append({"role": msg["role"], "content": msg["text"]})
-    
-    # Добавляем результаты поиска, если они есть
-    if search_results:
-        messages.append({
-            "role": "system", 
-            "content": f"Дополнительная информация из интернета:\n\n{search_results}"
-        })
-    
-    # Добавляем текущий запрос пользователя, если он еще не в истории
-    current_prompt_in_history = False
-    if chat_id and user_id:
-        if history and history[0].get("role") == "user" and history[0].get("text") == prompt:
-            current_prompt_in_history = True
-
-    if not current_prompt_in_history:
-        messages.append({"role": "user", "content": prompt})
+    guard_info = context_info or {}
+    if prepared_messages is not None:
+        messages = prepared_messages
+    else:
+        messages, guard_info = await _prepare_messages(prompt, model, chat_id, user_id, search_results)
 
     # Список моделей, которые будем пробовать по очереди
     models_to_try: list[str] = _build_models_to_try(model)
@@ -564,6 +703,7 @@ async def generate_text(
                 return (
                     "Извините, произошла ошибка при получении ответа от API. Пожалуйста, попробуйте позже.",
                     candidate_model,
+                    guard_info,
                 )
 
             try:
@@ -573,14 +713,16 @@ async def generate_text(
                     return (
                         "Извините, получен пустой ответ от API. Пожалуйста, попробуйте позже.",
                         candidate_model,
+                        guard_info,
                     )
                 logger.info(f"Received response from OpenRouter: {result[:100]}...")
-                return result, candidate_model
+                return result, candidate_model, guard_info
             except (AttributeError, IndexError) as e:
                 logger.error(f"Error extracting content from response: {str(e)}")
                 return (
                     "Извините, произошла ошибка при обработке ответа от API. Пожалуйста, попробуйте позже.",
                     candidate_model,
+                    guard_info,
                 )
 
         except Exception as e:
@@ -622,7 +764,7 @@ async def generate_text(
         else "Произошла ошибка при генерации текста: неизвестная ошибка"
     )
     failed_model = model or BOT_CONFIG.get("DEFAULT_MODEL") or "unknown"
-    return fallback_message, failed_model
+    return fallback_message, failed_model, guard_info
 
 async def generate_image(prompt: str) -> str:
     """Генерация изображения с помощью PiAPI.ai."""

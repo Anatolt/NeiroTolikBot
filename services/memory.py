@@ -70,6 +70,20 @@ def add_message(chat_id: str, user_id: str, role: str, model: str, text: str, se
     conn.commit()
     conn.close()
 
+def remove_messages_by_ids(message_ids: List[int]) -> None:
+    """Удаляет сообщения с указанными идентификаторами."""
+    if not message_ids:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    placeholders = ",".join("?" for _ in message_ids)
+    cursor.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", message_ids)
+
+    conn.commit()
+    conn.close()
+
 def get_history(chat_id: str, user_id: Optional[str] = None, limit: Optional[int] = None, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Получение истории сообщений."""
     conn = sqlite3.connect(DB_PATH)

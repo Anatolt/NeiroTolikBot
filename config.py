@@ -34,6 +34,9 @@ BOT_CONFIG = {
         "claude_opus": "anthropic/claude-3-opus",  # Для сложных задач
         "claude_sonnet": "anthropic/claude-3-sonnet",  # Для баланса скорости и качества
         "chatgpt": "openai/gpt-4-turbo",  # ChatGPT модель
+        "gpt4": "openai/gpt-4-turbo",  # Алиас на GPT-4
+        "gpt3": "openai/gpt-3.5-turbo",  # Алиас на GPT-3.5
+        "gpt5": "openai/gpt-4o",  # Алиас на самую мощную доступную модель
         "mistral": "mistralai/mistral-large-2407",  # Альтернативная модель
         "llama": "meta-llama/llama-3.3-70b-instruct:free",  # Бесплатная модель (актуальная)
         "meta": "meta-llama/llama-3.3-70b-instruct:free",  # Бесплатная модель (актуальная)
@@ -47,6 +50,29 @@ BOT_CONFIG = {
     "TEXT_GENERATION": {
         "MAX_TOKENS": 1000,
         "TEMPERATURE": 0.7
+    },
+
+    # Настройки контроля объема контекста
+    "CONTEXT_GUARD": {
+        "DEFAULT_CONTEXT_LENGTH": 32768,
+        "WARNING_RATIO": 0.8,  # предупреждаем при заполнении 80%
+        "HARD_RATIO": 0.95,  # стараемся уложиться в 95% лимита
+        "OVERFLOW_STRATEGY": "summarize",  # truncate | summarize
+        "MIN_MESSAGES_TO_SUMMARIZE": 4,
+        "SUMMARIZATION_MODEL": None,  # если None — используем запрошенную модель
+        "SUMMARY_MAX_TOKENS": 256,
+    },
+
+    # Настройки дополнительных инструкций (подготовка под будущий функционал)
+    "INSTRUCTION_SETTINGS": {
+        "USER_INSTRUCTIONS": {  # персональные подсказки от пользователя в каждом чате
+            "ENABLED": True,
+            "MAX_LENGTH": 2000,
+        },
+        "ADMIN_USER_NOTES": {  # заметки админа про конкретных пользователей
+            "ENABLED": True,
+            "MAX_LENGTH": 2000,
+        },
     },
     
     # Consilium Settings
