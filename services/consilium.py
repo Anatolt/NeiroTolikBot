@@ -3,7 +3,13 @@ import asyncio
 import re
 from typing import List, Dict, Optional
 from config import BOT_CONFIG
-from services.generation import generate_text, _resolve_user_model_keyword, fetch_models_data, _is_free_pricing
+from services.generation import (
+    generate_text,
+    _resolve_user_model_keyword,
+    fetch_models_data,
+    _is_free_pricing,
+    _prepare_messages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,17 +162,29 @@ async def generate_single_model_response(
     Возвращает словарь с результатом или ошибкой.
     """
     try:
-        # Добавляем инструкции о краткости и без markdown
         enhanced_prompt = prompt + "\n\nВАЖНО: Отвечай кратко (2-4 предложения, максимум 100-150 слов). Не используй markdown разметку (**, ###, ``` и т.д.) - пиши простым текстом. Отвечай по существу вопроса."
-        response, used_model = await asyncio.wait_for(
-            generate_text(enhanced_prompt, model, chat_id, user_id),
+
+        prepared_messages, guard_info = await _prepare_messages(
+            enhanced_prompt, model, chat_id, user_id, None
+        )
+
+        response, used_model, context_info = await asyncio.wait_for(
+            generate_text(
+                enhanced_prompt,
+                model,
+                chat_id,
+                user_id,
+                prepared_messages=prepared_messages,
+                context_info=guard_info,
+            ),
             timeout=timeout
         )
         return {
             "model": used_model,
             "response": response,
             "success": True,
-            "error": None
+            "error": None,
+            "context_notice": context_info,
         }
     except asyncio.TimeoutError:
         logger.error(f"Timeout generating response from model {model}")
@@ -207,6 +225,23 @@ async def generate_consilium_responses(
     if not models:
         logger.warning("No models provided for consilium")
         return []
+
+    # Избавляемся от дублей, чтобы одна и та же модель не отвечала дважды
+    unique_models: list[str] = []
+    seen: set[str] = set()
+    for model in models:
+        if model in seen:
+            continue
+        unique_models.append(model)
+        seen.add(model)
+
+    if len(unique_models) != len(models):
+        logger.info(
+            "Removed duplicate models from consilium request: %s -> %s",
+            models,
+            unique_models,
+        )
+    models = unique_models
     
     timeout = BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("TIMEOUT_PER_MODEL", 60)
     
@@ -311,7 +346,15 @@ def format_consilium_results(results: List[Dict], execution_time: float = None) 
             if response:
                 # Удаляем markdown и форматируем
                 clean_response = _remove_markdown(response)
-                messages.append(f"🤖 {model}:\n\n{clean_response}")
+                notice = ""
+                context_info = result.get("context_notice") or {}
+                if context_info.get("summary_text"):
+                    notice = "\n\nℹ️ Контекст переполнен — сделана краткая саммаризация истории."
+                elif context_info.get("trimmed_from_context"):
+                    notice = "\n\nℹ️ Контекст переполнен — часть старых сообщений скрыта в подготовке запроса."
+                elif context_info.get("warnings"):
+                    notice = "\n\nℹ️ Предупреждение о размере контекста."
+                messages.append(f"🤖 {model}:\n\n{clean_response}{notice}")
             else:
                 messages.append(f"🤖 {model}:\n\n⚠️ Получен пустой ответ")
         else:

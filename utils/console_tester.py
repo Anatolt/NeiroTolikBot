@@ -148,7 +148,7 @@ async def run_single_prompt(prompt: str, model: str, chat_id: str, user_id: str)
     """Отправляет одиночный запрос в указанную модель с записью в память."""
 
     add_message(chat_id, user_id, "user", model, prompt)
-    response, used_model = await generate_text(prompt, model, chat_id, user_id)
+    response, used_model, _context_info = await generate_text(prompt, model, chat_id, user_id)
     add_message(chat_id, user_id, "assistant", used_model, response)
     return response
 
