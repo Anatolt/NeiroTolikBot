@@ -1,10 +1,11 @@
 import logging
 import os
 import asyncio
+from pathlib import Path
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from config import BOT_CONFIG
-from utils.helpers import post_init, notify_admins_on_startup
+from utils.helpers import post_init, notify_admins_on_startup, resolve_system_prompt
 from handlers.commands import (
     clear_memory_command,
     help_command,
@@ -35,11 +36,13 @@ from datetime import datetime
 # Загрузка переменных окружения
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # Загрузка конфигурации из .env
 BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
-BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = os.getenv("CUSTOM_SYSTEM_PROMPT", "You are a helpful assistant.")
+BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

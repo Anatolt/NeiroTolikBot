@@ -142,6 +142,7 @@ NeiroTolikBot/
    OPENROUTER_API_KEY=ваш_ключ_openrouter
    PIAPI_KEY=ваш_ключ_piapi (опционально)
    CUSTOM_SYSTEM_PROMPT=ваш_промпт (опционально)
+   # или можно указать файл: CUSTOM_SYSTEM_PROMPT_FILE=neiro-tolik-promt.txt
    ```
 4. Запустите бота:
    ```bash

@@ -36,6 +36,7 @@ from config import BOT_CONFIG
 from services.generation import check_model_availability, generate_text, init_client
 from services.memory import add_message, clear_memory, get_history, init_db
 from handlers.commands import help_command, models_command, models_free_command
+from utils.helpers import resolve_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,7 @@ def configure_bot(api_key: str | None = None, system_prompt: str | None = None) 
     load_dotenv()
 
     BOT_CONFIG["OPENROUTER_API_KEY"] = api_key or os.getenv("OPENROUTER_API_KEY")
-    BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = system_prompt or os.getenv(
-        "CUSTOM_SYSTEM_PROMPT", "You are a helpful assistant."
-    )
+    BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = system_prompt or resolve_system_prompt(ROOT_DIR)
 
     if not BOT_CONFIG["OPENROUTER_API_KEY"]:
         raise RuntimeError(
