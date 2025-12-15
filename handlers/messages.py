@@ -60,6 +60,29 @@ def _normalize_routing_choice(text: str) -> str | None:
 def _is_routing_status_request(text: str) -> bool:
     return text.strip().lower() in _ROUTING_STATUS_KEYWORDS
 
+
+def _format_response_header(
+    routing_mode: str | None, context_info: dict | None, model: str | None
+) -> str | None:
+    parts: list[str] = []
+
+    if routing_mode:
+        routing_label = "алгоритмический" if routing_mode == "rules" else "LLM"
+        parts.append(f"🔀 Роутинг: {routing_label}")
+
+    if context_info:
+        tokens = context_info.get("usage_tokens")
+        limit = context_info.get("context_limit")
+        if tokens and limit:
+            parts.append(f"📦 Контекст: {tokens}/{limit} токенов")
+        elif tokens:
+            parts.append(f"📦 Контекст: {tokens} токенов")
+
+    if model:
+        parts.append(f"🤖 Модель: {model}")
+
+    return " • ".join(parts) if parts else None
+
 async def _notify_context_guard(message, context_info: dict | None) -> None:
     if not context_info:
         return
@@ -305,7 +328,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
+        header = _format_response_header(user_routing_mode, context_info, used_model)
+        reply_text = f"{header}\n\n{response}" if header else response
+        await message.reply_text(reply_text)
     
     elif request_type == "search_previous":
         # Поиск по предыдущему сообщению - возвращаемся к последнему ответу модели
@@ -372,7 +397,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
+        header = _format_response_header(user_routing_mode, context_info, used_model)
+        reply_text = f"{header}\n\n{response}" if header else response
+        await message.reply_text(reply_text)
     
     elif request_type == "consilium":
         logger.info(f"Processing consilium request: '{content}'")
@@ -476,7 +503,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        await message.reply_text(f"Ответ от {used_model}:\n\n{response}")
+        header = _format_response_header(user_routing_mode, context_info, used_model)
+        reply_text = f"{header}\n\n{response}" if header else response
+        await message.reply_text(reply_text)
     else:
         logger.warning(f"Unknown request type: {request_type}")
         await message.reply_text("Извините, не удалось обработать ваш запрос.")
