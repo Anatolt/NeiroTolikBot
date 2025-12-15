@@ -606,6 +606,7 @@ async def _prepare_messages(
     chat_id: str | None,
     user_id: str | None,
     search_results: str | None,
+    include_history: bool = True,
 ) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
     messages: List[Dict[str, str]] = []
 
@@ -616,7 +617,7 @@ async def _prepare_messages(
     messages.append({"role": "system", "content": system_content})
 
     history: List[Dict[str, Any]] = []
-    if chat_id and user_id:
+    if chat_id and user_id and include_history:
         history = get_history(chat_id, user_id, limit=10)
         history = _normalize_history(history)
 
@@ -655,6 +656,7 @@ async def generate_text(
     search_results: str = None,
     prepared_messages: List[Dict[str, str]] | None = None,
     context_info: Dict[str, Any] | None = None,
+    use_context: bool = True,
 ) -> tuple[str, str, Dict[str, Any]]:
     """
     Генерация текста с помощью OpenRouter API.
@@ -672,7 +674,14 @@ async def generate_text(
     if prepared_messages is not None:
         messages = prepared_messages
     else:
-        messages, guard_info = await _prepare_messages(prompt, model, chat_id, user_id, search_results)
+        messages, guard_info = await _prepare_messages(
+            prompt,
+            model,
+            chat_id,
+            user_id,
+            search_results,
+            include_history=use_context,
+        )
 
     # Список моделей, которые будем пробовать по очереди
     models_to_try: list[str] = _build_models_to_try(model)

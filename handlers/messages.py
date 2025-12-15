@@ -10,9 +10,8 @@ from services.generation import (
     build_models_messages,
     generate_image,
     generate_text,
-    _resolve_user_model_keyword,
 )
-from services.memory import add_message, get_history
+from services.memory import add_message, get_history, get_routing_mode, set_routing_mode
 from services.web_search import search_web
 from services.consilium import (
     parse_models_from_message,
@@ -21,10 +20,45 @@ from services.consilium import (
     format_consilium_results,
     extract_prompt_from_consilium_message,
 )
+from services.router import route_request
 from config import BOT_CONFIG
 from services.memory import add_admin, is_admin
 
 logger = logging.getLogger(__name__)
+
+_ROUTING_RULES_KEYWORDS = {
+    "роутинг алгоритмами",
+    "роутинг правилами",
+    "routing rules",
+    "routing algorithms",
+    "routing algo",
+}
+
+_ROUTING_LLM_KEYWORDS = {
+    "роутинг ллм",
+    "роутинг llm",
+    "routing llm",
+    "routing ai",
+}
+
+_ROUTING_STATUS_KEYWORDS = {
+    "какой роутинг",
+    "режим роутинга",
+    "routing mode",
+}
+
+
+def _normalize_routing_choice(text: str) -> str | None:
+    normalized = text.strip().lower()
+    if normalized in _ROUTING_RULES_KEYWORDS:
+        return "rules"
+    if normalized in _ROUTING_LLM_KEYWORDS:
+        return "llm"
+    return None
+
+
+def _is_routing_status_request(text: str) -> bool:
+    return text.strip().lower() in _ROUTING_STATUS_KEYWORDS
 
 async def _notify_context_guard(message, context_info: dict | None) -> None:
     if not context_info:
@@ -89,111 +123,6 @@ async def send_models_by_request(
     for part in parts:
         await message.reply_text(part)
 
-async def route_request(text: str, bot_username: str | None) -> tuple[str, str, str | None]:
-    """Маршрутизация запроса к соответствующему сервису."""
-    text_lower = text.lower().strip()
-
-    # Проверка на запрос возможностей
-    if text_lower in ["что ты умеешь", "возможности", "capabilities", "help", "помощь"]:
-        return "help", "help", None
-
-    # Проверка на запрос списка моделей
-    if text_lower in ["модели", "models"]:
-        return "models_hint", "", None
-
-    model_aliases = {
-        "покажи бесплатные модели": "free",
-        "покажи платные модели": "paid",
-        "покажи модели с большим контекстом": "large_context",
-        "покажи специализированные модели": "specialized",
-        "покажи все модели": "all",
-    }
-
-    if text_lower in model_aliases:
-        return "models_category", model_aliases[text_lower], None
-
-    # Проверка на запрос консилиума
-    if text_lower.startswith("консилиум"):
-        return "consilium", text, None
-
-    # Проверка на запрос изображения
-    if text_lower.startswith(("нарисуй", "сгенерируй картинку", "создай изображение")):
-        return "image", text, None
-    
-    # Проверка на запрос веб-поиска
-    # "погугли ..." или "поищи ..."
-    if text_lower.startswith(("погугли", "поищи")):
-        # Извлекаем запрос после триггера
-        search_query = text
-        if text_lower.startswith("погугли"):
-            search_query = text[8:].strip()  # Убираем "погугли "
-        elif text_lower.startswith("поищи"):
-            search_query = text[6:].strip()  # Убираем "поищи "
-        
-        # Если запрос пустой, это означает "погугли" без запроса - используем предыдущее сообщение
-        if not search_query:
-            return "search_previous", "", None
-        else:
-            return "search", search_query, None
-    
-    # Определение модели для текстового запроса
-    model = None
-    prompt = text
-    
-    # Проверка на прямое указание модели в формате "ответь с {model_name}" или "с {model_name}"
-    # Паттерн для поиска "ответь с" или "с" перед именем модели
-    # Имя модели может содержать: буквы, цифры, дефисы, точки, слеши, двоеточия
-    model_pattern = r'(?:ответь\s+с|с)\s+([a-zA-Z0-9\-\._/]+(?::[a-zA-Z0-9\-\._]+)?)'
-    match = re.search(model_pattern, text_lower, re.IGNORECASE)
-    if match:
-        extracted_model = match.group(1)
-        resolved = _resolve_user_model_keyword(extracted_model)
-        # Удаляем указание модели из текста (включая возможные пробелы и запятые после)
-        # Используем более точный паттерн для удаления
-        prompt = re.sub(
-            r'(?:ответь\s+с|с)\s+' + re.escape(extracted_model) + r'[,\s]*',
-            '',
-            text,
-            flags=re.IGNORECASE,
-            count=1
-        ).strip()
-        # Убираем лишние пробелы и запятые в начале
-        prompt = re.sub(r'^[,\s]+', '', prompt)
-        # Если промпт не пустой, возвращаем его с моделью
-        if prompt:
-            return "text", prompt, resolved or extracted_model
-        # Если промпт пустой, но модель указана, все равно возвращаем модель
-        # (пользователь может хотеть просто проверить связь с моделью)
-        return "text", "", resolved or extracted_model
-    
-    # Проверка на указание модели в начале
-    model_keywords = {k.lower(): v for k, v in BOT_CONFIG.get("MODELS", {}).items()}
-    
-    # Проверяем наличие модели в начале запроса
-    words = prompt.lower().split()
-    if words and words[0] in model_keywords:
-        resolved = _resolve_user_model_keyword(words[0]) or model_keywords[words[0]]
-        model = resolved
-        prompt = " ".join(words[1:]).strip()
-        return "text", prompt, model
-    
-    # Проверяем наличие модели в конце запроса
-    for keyword, model_name in model_keywords.items():
-        if prompt.lower().endswith(f"через {keyword}"):
-            model = _resolve_user_model_keyword(keyword) or model_name
-            prompt = prompt[:-len(f"через {keyword}")].strip()
-            return "text", prompt, model
-
-    # Префиксное совпадение с витриной моделей (например, "nvidia ..." или "kwaipilot ...")
-    first_word = words[0] if words else ""
-    if first_word:
-        resolved = _resolve_user_model_keyword(first_word)
-        if resolved:
-            prompt = " ".join(words[1:]).strip()
-            return "text", prompt, resolved
-    
-    return "text", prompt, None
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик входящих сообщений."""
     message = update.message
@@ -208,6 +137,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     bot_username = context.bot.username
     text = message.text
     chat_type = message.chat.type
+    chat_id = str(message.chat_id)
+    user_id = str(message.from_user.id)
     effective_text = text
 
     # Проверка ввода пароля администратора
@@ -215,8 +146,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data["awaiting_admin_pass"] = False
         if text.strip() == BOT_CONFIG.get("ADMIN_PASS"):
             context.user_data["is_admin"] = True
-            chat_id = str(message.chat_id)
-            user_id = str(message.from_user.id)
             add_admin(chat_id, user_id)
             await message.reply_text(
                 f"Админ-режим активирован. Бот перезапускался в {BOT_CONFIG.get('BOOT_TIME')}."
@@ -268,11 +197,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         logger.info(f"Group chat message, extracted text: '{effective_text}'")
+
+    # Индивидуальное переключение режима роутинга через текстовые команды
+    routing_choice = _normalize_routing_choice(effective_text)
+    if routing_choice:
+        set_routing_mode(chat_id, user_id, routing_choice)
+        mode_label = "алгоритмический" if routing_choice == "rules" else "LLM"
+        await message.reply_text(
+            f"🔀 Включён {mode_label} роутинг для ваших сообщений в этом чате.\n"
+            f"Чтобы переключиться, отправьте 'роутинг алгоритмами' или 'роутинг ллм', либо используйте слеш-команды /routing_rules и /routing_llm."
+        )
+        return
+
+    if _is_routing_status_request(effective_text):
+        current_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
+        mode_label = "алгоритмический" if current_mode == "rules" else "LLM"
+        await message.reply_text(f"🔎 Текущий режим роутинга: {mode_label}.")
+        return
     
     # Маршрутизация запроса
-    logger.info(f"Routing request: '{effective_text}'")
-    request_type, content, model = await route_request(effective_text, bot_username)
-    logger.info(f"Request routed to: {request_type}, model: {model}")
+    user_routing_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
+    logger.info(f"Routing request (mode={user_routing_mode}): '{effective_text}'")
+    decision = await route_request(effective_text, bot_username, routing_mode=user_routing_mode)
+    request_type = decision.action or "text"
+    content = decision.prompt or effective_text
+    suggested_models = decision.target_models or []
+    model = suggested_models[0] if suggested_models else None
+    category = decision.category
+    use_context = decision.use_context
+    logger.info(
+        f"Router resolved request to: {request_type}, model: {model}, use_context: {decision.use_context}, reason: {decision.reason}"
+    )
+
+    if request_type == "search" and not content:
+        request_type = "search_previous"
+
+    if request_type == "models_category" and category:
+        content = category
+
+    if request_type == "text" and len(suggested_models) > 1:
+        request_type = "consilium"
     
     # Обработка запроса
     if request_type == "help":
@@ -327,7 +291,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # Генерируем ответ с результатами поиска
         response, used_model, context_info = await generate_text(
-            prompt_with_search, model_name, chat_id, user_id, search_results=search_results
+            prompt_with_search,
+            model_name,
+            chat_id,
+            user_id,
+            search_results=search_results,
+            use_context=use_context,
         )
 
         await _notify_context_guard(message, context_info)
@@ -371,7 +340,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         search_prompt = f"Пользователь ранее спросил: '{previous_user_message}'\n\nЯ ответил: '{previous_assistant_message}'\n\nТеперь пользователь просит найти дополнительную информацию в интернете. Сформулируй краткий поисковый запрос (2-5 слов) для поиска в интернете, который поможет дополнить или уточнить мой ответ. Ответь только поисковым запросом, без дополнительных слов."
         
         # Получаем поисковый запрос от модели (без добавления в историю, чтобы не засорять)
-        search_query_response, _used_model, _context_info = await generate_text(search_prompt, model_name, None, None)
+        search_query_response, _used_model, _context_info = await generate_text(
+            search_prompt, model_name, None, None, use_context=False
+        )
         search_query = search_query_response.strip().strip('"').strip("'")
         
         logger.info(f"Model formulated search query: '{search_query}'")
@@ -387,7 +358,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # Генерируем финальный ответ
         response, used_model, context_info = await generate_text(
-            final_prompt, model_name, chat_id, user_id, search_results=search_results
+            final_prompt,
+            model_name,
+            chat_id,
+            user_id,
+            search_results=search_results,
+            use_context=use_context,
         )
 
         await _notify_context_guard(message, context_info)
@@ -403,8 +379,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id = str(message.chat_id)
         user_id = str(message.from_user.id)
         
-        # Парсим модели из сообщения
-        models = await parse_models_from_message(content)
+        # Парсим модели из сообщения или используем подсказку сортировщика
+        models = suggested_models or await parse_models_from_message(content)
         
         # Если модели не указаны, выбираем по умолчанию
         if not models:
@@ -490,7 +466,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "user", model_name, content)
         
         # Генерируем ответ
-        response, used_model, context_info = await generate_text(content, model_name, chat_id, user_id)
+        response, used_model, context_info = await generate_text(
+            content, model_name, chat_id, user_id, use_context=use_context
+        )
 
         await _notify_context_guard(message, context_info)
         
