@@ -4,7 +4,16 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
 from config import BOT_CONFIG
-from services.memory import start_new_dialog, clear_memory, add_message, add_admin, is_admin, get_all_admins
+from services.memory import (
+    add_admin,
+    add_message,
+    clear_memory,
+    get_all_admins,
+    get_routing_mode,
+    is_admin,
+    set_routing_mode,
+    start_new_dialog,
+)
 from services.generation import CATEGORY_TITLES, build_models_messages
 from services.consilium import (
     parse_models_from_message,
@@ -105,6 +114,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"🤖 /models \\- Подсказка по спискам моделей\n"
         f"   /models_free, /models_paid, /models_large_context, /models_specialized\n"
         f"   /models_all — полный список моделей\n"
+        f"🔀 /routing_rules или /routing_llm — выбрать алгоритмический или LLM роутинг\n"
+        f"   /routing_mode — показать текущий режим\n"
         f"🏥 /consilium \\- Получить ответы от нескольких моделей одновременно\n\n"
         f"Также вы можете:\n"
         f"• Задавать вопросы боту\n"
@@ -115,6 +126,41 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     
     await update.message.reply_markdown_v2(text=text)
+
+
+def _format_routing_mode_label(mode: str) -> str:
+    return "алгоритмический" if mode == "rules" else "LLM"
+
+
+async def routing_rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает алгоритмический роутер для пользователя."""
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+
+    set_routing_mode(chat_id, user_id, "rules")
+    await update.message.reply_text(
+        "🔀 Включён алгоритмический роутинг. Чтобы вернуться к LLM, используйте /routing_llm или напишите 'роутинг ллм'."
+    )
+
+
+async def routing_llm_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает LLM роутер для пользователя."""
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+
+    set_routing_mode(chat_id, user_id, "llm")
+    await update.message.reply_text(
+        "🔀 Включён LLM роутинг. Чтобы вернуться к алгоритмам, используйте /routing_rules или напишите 'роутинг алгоритмами'."
+    )
+
+
+async def routing_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает текущий режим роутинга для пользователя."""
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+
+    current_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
+    await update.message.reply_text(f"🔎 Текущий режим роутинга: {_format_routing_mode_label(current_mode)}.")
 
 async def _send_models(update: Update, order: list[str], header: str, max_items: int | None = 20) -> None:
     """Получает модели и отправляет пользователю списком."""

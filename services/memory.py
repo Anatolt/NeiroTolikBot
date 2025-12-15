@@ -53,6 +53,18 @@ def init_db():
         UNIQUE(chat_id, user_id)
     )
     ''')
+
+    # Таблица пользовательских настроек (например, выбор режима роутинга)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS user_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        routing_mode TEXT,
+        updated_at DATETIME NOT NULL,
+        UNIQUE(chat_id, user_id)
+    )
+    ''')
     
     conn.commit()
     conn.close()
@@ -229,5 +241,38 @@ def remove_admin(chat_id: str, user_id: str) -> None:
     conn.commit()
     conn.close()
 
+def set_routing_mode(chat_id: str, user_id: str, routing_mode: str | None) -> None:
+    """Сохраняет выбранный пользователем режим роутинга."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO user_settings (chat_id, user_id, routing_mode, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id, user_id)
+        DO UPDATE SET routing_mode=excluded.routing_mode, updated_at=excluded.updated_at
+        """,
+        (chat_id, user_id, routing_mode, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_routing_mode(chat_id: str, user_id: str) -> Optional[str]:
+    """Возвращает сохранённый режим роутинга пользователя, если он есть."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT routing_mode FROM user_settings WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result and result[0] else None
+
 # Инициализация базы данных при импорте модуля
-init_db() 
+init_db()
