@@ -29,7 +29,6 @@ from handlers.messages import handle_message
 from services.generation import (
     init_client,
     check_model_availability,
-    choose_best_free_model,
     refresh_models_from_api,
 )
 from services.memory import init_db
@@ -78,14 +77,6 @@ async def check_default_model():
         await refresh_models_from_api()
     except Exception as e:
         logger.error(f"Failed to refresh models from API: {str(e)}")
-
-    try:
-        best_free_model = await choose_best_free_model()
-        if best_free_model:
-            BOT_CONFIG["DEFAULT_MODEL"] = best_free_model
-            logger.info(f"Default model updated to best free option: {best_free_model}")
-    except Exception as e:
-        logger.error(f"Failed to select best free model: {str(e)}")
 
     # Проверяем доступность модели по умолчанию и резервных
     models_to_probe = []
