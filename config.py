@@ -11,7 +11,7 @@ BOT_CONFIG = {
     
     # API Settings
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-    "DEFAULT_MODEL": "anthropic/claude-3-haiku",  # Изменено на Claude
+    "DEFAULT_MODEL": "deepseek/deepseek-r1-distill-qwen-14b",  # Базовая DeepSeek
     "ROUTER_MODEL": "openai/gpt-4o-mini",  # Легкая модель для сортировки запросов
     "ROUTING_MODE": "rules",  # rules | llm
     "CUSTOM_SYSTEM_PROMPT": None,  # Will be loaded from .env
@@ -39,11 +39,13 @@ BOT_CONFIG = {
         "gpt4": "openai/gpt-4-turbo",  # Алиас на GPT-4
         "gpt3": "openai/gpt-3.5-turbo",  # Алиас на GPT-3.5
         "gpt5": "openai/gpt-4o",  # Алиас на самую мощную доступную модель
+        "gpt": "openai/gpt-4o-mini",  # Обобщенный алиас на GPT
         "mistral": "mistralai/mistral-large-2407",  # Альтернативная модель
         "llama": "meta-llama/llama-3.3-70b-instruct:free",  # Бесплатная модель (актуальная)
         "meta": "meta-llama/llama-3.3-70b-instruct:free",  # Бесплатная модель (актуальная)
         "deepseek": "deepseek/deepseek-r1-distill-qwen-14b",  # Модель DeepSeek
         "qwen": "qwen/qwen2.5-vl-3b-instruct:free",  # Модель Qwen
+        "gemini": "google/gemini-2.0-flash-exp:free",  # Модель Gemini
         "fimbulvetr": "sao10k/fimbulvetr-11b-v2",  # Модель Fimbulvetr
         "sao10k": "sao10k/fimbulvetr-11b-v2"  # Модель Fimbulvetr
     },
@@ -92,9 +94,21 @@ BOT_CONFIG = {
 
     # Ordered list of fallback моделей, если запрошенная недоступна
     "FALLBACK_MODELS": [
-        "openai/gpt-4o-mini",
-        "openai/gpt-3.5-turbo",
+        "mistralai/mistral-large-2407",
+        "qwen/qwen2.5-vl-3b-instruct:free",
         "anthropic/claude-3-haiku",
+        "google/gemini-2.0-flash-exp:free",
+        "openai/gpt-4o-mini",
+    ],
+
+    # Приоритет последовательности моделей для фолбэков и консилиума
+    "PREFERRED_MODEL_ORDER": [
+        "deepseek",
+        "mistral",
+        "qwen",
+        "claude",
+        "gemini",
+        "gpt",
     ],
     
     # Keywords for routing

@@ -3,7 +3,7 @@ import json
 import asyncio
 import aiohttp
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 from openai import AsyncOpenAI
 from config import BOT_CONFIG
 from services.memory import get_history, get_user_summary, save_summary
@@ -375,6 +375,14 @@ def _build_alias_map(models_data: list[dict]) -> dict[str, str]:
         models_data, ["qwen"]
     )
 
+    alias_map["gemini"] = _pick_model_by_keywords(models_data, ["gemini"]) or _pick_model_by_keywords(
+        models_data, ["gemma"]
+    )
+
+    alias_map["gpt"] = _pick_model_by_keywords(models_data, ["gpt", "mini"]) or _pick_model_by_keywords(
+        models_data, ["gpt"]
+    )
+
     fimbulvetr_variant = _pick_model_by_keywords(models_data, ["fimbulvetr"])
     alias_map["fimbulvetr"] = fimbulvetr_variant
     alias_map["sao10k"] = fimbulvetr_variant
@@ -382,21 +390,27 @@ def _build_alias_map(models_data: list[dict]) -> dict[str, str]:
     return {k: v for k, v in alias_map.items() if v}
 
 
+def _resolve_priority_models(order: list[str], alias_map: dict[str, str]) -> list[str]:
+    """Преобразует приоритетный список алиасов в список id моделей без дублей."""
+    resolved: list[str] = []
+    for alias in order:
+        candidate = alias_map.get(alias) or BOT_CONFIG.get("MODELS", {}).get(alias)
+        if candidate and candidate not in BOT_CONFIG.get("EXCLUDED_MODELS", []) and candidate not in resolved:
+            resolved.append(candidate)
+    return resolved
+
+
 def _build_fallback_models(default_model: str | None, alias_map: dict[str, str]) -> list[str]:
     """Формирует список запасных моделей с учетом алиасов."""
-    order = [
-        default_model,
-        alias_map.get("chatgpt"),
-        alias_map.get("claude"),
-        alias_map.get("mistral"),
-        alias_map.get("llama"),
-        alias_map.get("deepseek"),
-        alias_map.get("qwen"),
-    ]
-    result: list[str] = []
-    for candidate in order:
-        if candidate and candidate not in result:
-            result.append(candidate)
+    priority_order = BOT_CONFIG.get("PREFERRED_MODEL_ORDER", [])
+    preferred = _resolve_priority_models(priority_order, alias_map)
+
+    if default_model and default_model not in preferred:
+        preferred.insert(0, default_model)
+
+    # default модель будет первой, остальные — очередные фолбэки
+    result: list[str] = preferred[1:] if preferred else []
+
     # если список пустой, вернем предыдущее значение из конфигурации
     if not result:
         result.extend(BOT_CONFIG.get("FALLBACK_MODELS", []))
@@ -425,12 +439,13 @@ async def refresh_models_from_api() -> dict[str, str]:
     merged_aliases.update(alias_map)
     BOT_CONFIG["MODELS"] = merged_aliases
 
-    # Пересчитываем модель по умолчанию и список фолбэков
-    best_free_model = await choose_best_free_model(models_data)
-    if best_free_model:
-        BOT_CONFIG["DEFAULT_MODEL"] = best_free_model
-
-    BOT_CONFIG["FALLBACK_MODELS"] = _build_fallback_models(BOT_CONFIG.get("DEFAULT_MODEL"), BOT_CONFIG["MODELS"])
+    # Пересчитываем модель по умолчанию и список фолбэков согласно приоритету
+    priority_models = _resolve_priority_models(BOT_CONFIG.get("PREFERRED_MODEL_ORDER", []), BOT_CONFIG["MODELS"])
+    if priority_models:
+        BOT_CONFIG["DEFAULT_MODEL"] = priority_models[0]
+        BOT_CONFIG["FALLBACK_MODELS"] = priority_models[1:]
+    else:
+        BOT_CONFIG["FALLBACK_MODELS"] = _build_fallback_models(BOT_CONFIG.get("DEFAULT_MODEL"), BOT_CONFIG["MODELS"])
 
     logger.info(
         "Models refreshed from API. Default: %s, aliases updated: %s",
@@ -657,6 +672,7 @@ async def generate_text(
     prepared_messages: List[Dict[str, str]] | None = None,
     context_info: Dict[str, Any] | None = None,
     use_context: bool = True,
+    on_model_switch: Callable[[str, str, str | None], Awaitable[None]] | None = None,
 ) -> tuple[str, str, Dict[str, Any]]:
     """
     Генерация текста с помощью OpenRouter API.
@@ -689,6 +705,13 @@ async def generate_text(
     last_error: Exception | None = None
     refreshed = False
     idx = 0
+
+    def _find_next_model(start_from: int) -> str | None:
+        for future_model in models_to_try[start_from:]:
+            if future_model not in tried_models and future_model not in BOT_CONFIG.get("EXCLUDED_MODELS", []):
+                return future_model
+        return None
+
     while idx < len(models_to_try):
         candidate_model = models_to_try[idx]
         if candidate_model in tried_models:
@@ -744,24 +767,50 @@ async def generate_text(
                     refreshed = True
                     await refresh_models_from_api()
                     models_to_try = _build_models_to_try(model)
+                    next_candidate = _find_next_model(0)
                     idx = 0
-                    continue
-                idx += 1
+                else:
+                    idx += 1
+                    next_candidate = _find_next_model(idx)
+
+                if on_model_switch and next_candidate:
+                    try:
+                        await on_model_switch(candidate_model, next_candidate, str(e))
+                    except Exception as notify_error:
+                        logger.warning(f"Failed to notify about model switch: {notify_error}")
                 continue
             # Если ограничение по rate limit, пробуем следующую модель
             if _is_rate_limit_error(e):
                 logger.warning(f"Model {candidate_model} rate-limited, trying next available model")
                 idx += 1
+                next_candidate = _find_next_model(idx)
+                if on_model_switch and next_candidate:
+                    try:
+                        await on_model_switch(candidate_model, next_candidate, str(e))
+                    except Exception as notify_error:
+                        logger.warning(f"Failed to notify about model switch: {notify_error}")
                 continue
             # Если модель требует аудио, пропускаем её
             if _is_audio_required_error(e):
                 logger.warning(f"Model {candidate_model} requires audio, skipping to next model")
                 idx += 1
+                next_candidate = _find_next_model(idx)
+                if on_model_switch and next_candidate:
+                    try:
+                        await on_model_switch(candidate_model, next_candidate, str(e))
+                    except Exception as notify_error:
+                        logger.warning(f"Failed to notify about model switch: {notify_error}")
                 continue
             # Если провайдер ругается на порядок сообщений, пробуем следующую модель
             if _is_conversation_order_error(e):
                 logger.warning(f"Model {candidate_model} rejected conversation order, trying next model")
                 idx += 1
+                next_candidate = _find_next_model(idx)
+                if on_model_switch and next_candidate:
+                    try:
+                        await on_model_switch(candidate_model, next_candidate, str(e))
+                    except Exception as notify_error:
+                        logger.warning(f"Failed to notify about model switch: {notify_error}")
                 continue
             # Для других ошибок не пытаемся бесконечно менять модели
             break

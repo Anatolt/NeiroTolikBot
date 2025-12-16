@@ -333,7 +333,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if request_type == "text" and len(suggested_models) > 1:
         request_type = "consilium"
-    
+
+    async def notify_model_switch(failed_model: str, next_model: str, error_text: str | None) -> None:
+        reason = f" ({error_text})" if error_text else ""
+        try:
+            await message.reply_text(
+                f"⚠️ Модель {failed_model} не ответила{reason}. Пошел спрашивать другую модель {next_model}."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send model switch notice: {e}")
+
+    # Мгновенно уведомляем пользователя, что запрос принят
+    if request_type in {"text", "search", "search_previous", "consilium"}:
+        try:
+            await message.reply_text("✅ Принял запрос, думаю...")
+        except Exception as e:
+            logger.warning(f"Failed to send acceptance message: {e}")
+
     # Обработка запроса
     if request_type == "help":
         logger.info("Processing help request")
@@ -393,6 +409,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user_id,
             search_results=search_results,
             use_context=use_context,
+            on_model_switch=notify_model_switch,
         )
 
         await _notify_context_guard(message, context_info)
@@ -443,7 +460,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # Получаем поисковый запрос от модели (без добавления в историю, чтобы не засорять)
         search_query_response, _used_model, _context_info = await generate_text(
-            search_prompt, model_name, None, None, use_context=False
+            search_prompt,
+            model_name,
+            None,
+            None,
+            use_context=False,
+            on_model_switch=notify_model_switch,
         )
         search_query = search_query_response.strip().strip('"').strip("'")
         
@@ -466,6 +488,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user_id,
             search_results=search_results,
             use_context=use_context,
+            on_model_switch=notify_model_switch,
         )
 
         await _notify_context_guard(message, context_info)
@@ -575,7 +598,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         # Генерируем ответ
         response, used_model, context_info = await generate_text(
-            content, model_name, chat_id, user_id, use_context=use_context
+            content,
+            model_name,
+            chat_id,
+            user_id,
+            use_context=use_context,
+            on_model_switch=notify_model_switch,
         )
 
         await _notify_context_guard(message, context_info)
