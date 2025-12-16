@@ -61,11 +61,18 @@ def init_db():
         chat_id TEXT NOT NULL,
         user_id TEXT NOT NULL,
         routing_mode TEXT,
+        show_response_header BOOLEAN DEFAULT 1,
         updated_at DATETIME NOT NULL,
         UNIQUE(chat_id, user_id)
     )
     ''')
-    
+
+    # Добавляем недостающие колонки для уже созданных таблиц
+    cursor.execute("PRAGMA table_info(user_settings)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    if "show_response_header" not in existing_columns:
+        cursor.execute("ALTER TABLE user_settings ADD COLUMN show_response_header BOOLEAN DEFAULT 1")
+
     conn.commit()
     conn.close()
 
@@ -273,6 +280,44 @@ def get_routing_mode(chat_id: str, user_id: str) -> Optional[str]:
     conn.close()
 
     return result[0] if result and result[0] else None
+
+
+def set_show_response_header(chat_id: str, user_id: str, show_header: bool) -> None:
+    """Сохраняет выбор отображения техшапки для пользователя."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO user_settings (chat_id, user_id, show_response_header, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id, user_id)
+        DO UPDATE SET show_response_header=excluded.show_response_header, updated_at=excluded.updated_at
+        """,
+        (chat_id, user_id, int(show_header), datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_show_response_header(chat_id: str, user_id: str) -> bool:
+    """Возвращает флаг отображения техшапки (по умолчанию включён)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT show_response_header FROM user_settings WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    if result is None:
+        return True
+
+    value = result[0]
+    return bool(value) if value is not None else True
 
 # Инициализация базы данных при импорте модуля
 init_db()
