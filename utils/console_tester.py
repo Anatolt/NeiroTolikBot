@@ -2,7 +2,7 @@
 
 Позволяет:
 1) Прогонять смоук-тесты OpenRouter (генерация/переключение/память).
-2) Проверять текстовые ответы команд /help и /models офлайн, без сети.
+2) Проверять текстовые ответы всех слеш-команд офлайн, без сети.
 3) Общаться с ботом из консоли в интерактивном режиме.
 
 Примеры запуска:
@@ -33,9 +33,30 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from config import BOT_CONFIG
-from services.generation import check_model_availability, generate_text, init_client
+from services.generation import (
+    check_model_availability,
+    fetch_models_data,
+    generate_text,
+    init_client,
+)
 from services.memory import add_message, clear_memory, get_history, init_db
-from handlers.commands import help_command, models_command, models_free_command
+from handlers.commands import (
+    admin_command,
+    clear_memory_command,
+    consilium_command,
+    help_command,
+    models_all_command,
+    models_command,
+    models_free_command,
+    models_large_context_command,
+    models_paid_command,
+    models_specialized_command,
+    new_dialog,
+    routing_llm_command,
+    routing_mode_command,
+    routing_rules_command,
+    start,
+)
 from utils.helpers import resolve_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -63,6 +84,10 @@ class FakeUser:
     id: str
     first_name: str = "Console"
 
+    @property
+    def full_name(self) -> str:  # pragma: no cover - упрощённая модель пользователя
+        return self.first_name
+
     def mention_markdown_v2(self) -> str:  # pragma: no cover - утилита для форматирования
         return f"[{self.first_name}](tg://user?id={self.id})"
 
@@ -74,13 +99,19 @@ class FakeChat:
 
 @dataclass
 class FakeMessage:
+    text: str | None = None
     replies: list[str] = field(default_factory=list)
 
-    async def reply_markdown_v2(self, text: str) -> None:
+    async def reply_markdown_v2(self, text: str) -> "FakeMessage":
         self.replies.append(text)
+        return self
 
-    async def reply_text(self, text: str) -> None:
+    async def reply_text(self, text: str, *_, **__) -> "FakeMessage":
         self.replies.append(text)
+        return self
+
+    async def delete(self) -> None:  # pragma: no cover - поведение статуса консилиума
+        self.replies.append("__deleted__")
 
 
 @dataclass
@@ -90,53 +121,160 @@ class FakeUpdate:
     message: FakeMessage
 
 
+@dataclass
 class FakeContext:
     """Пустой контекст для вызова обработчиков команд."""
 
-    bot_data: dict = {}
+    bot_data: dict = field(default_factory=dict)
+    user_data: dict = field(default_factory=dict)
 
 
 async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool, str]]:
-    """Проверяет ответы команд /help и /models офлайн (без запроса к API)."""
+    """Проверяет ответы всех слеш-команд офлайн (без запроса к API)."""
 
     results: List[Tuple[str, bool, str]] = []
     user = FakeUser(id=user_id)
     chat = FakeChat(id=chat_id)
+    context = FakeContext()
 
-    # 1. /help
+    init_db()
+
+    # 1. /start
+    start_message = FakeMessage()
+    start_update = FakeUpdate(effective_user=user, effective_chat=chat, message=start_message)
+    await start(start_update, context)
+    start_ok = bool(start_message.replies) and BOT_CONFIG["DEFAULT_MODEL"] in start_message.replies[0]
+    results.append(("Команда /start", start_ok, start_message.replies[0] if start_message.replies else "Нет ответа"))
+
+    # 2. /new
+    new_message = FakeMessage()
+    new_update = FakeUpdate(effective_user=user, effective_chat=chat, message=new_message)
+    await new_dialog(new_update, context)
+    new_ok = bool(new_message.replies) and "новый диалог" in new_message.replies[0].lower()
+    results.append(("Команда /new", new_ok, new_message.replies[0] if new_message.replies else "Нет ответа"))
+
+    # 3. /clear
+    clear_message = FakeMessage()
+    clear_update = FakeUpdate(effective_user=user, effective_chat=chat, message=clear_message)
+    await clear_memory_command(clear_update, context)
+    clear_ok = bool(clear_message.replies) and "память" in clear_message.replies[0].lower()
+    results.append(("Команда /clear", clear_ok, clear_message.replies[0] if clear_message.replies else "Нет ответа"))
+
+    # 4. /admin
+    admin_message = FakeMessage()
+    admin_update = FakeUpdate(effective_user=user, effective_chat=chat, message=admin_message)
+    await admin_command(admin_update, context)
+    admin_ok = bool(admin_message.replies)
+    results.append(("Команда /admin", admin_ok, admin_message.replies[0] if admin_message.replies else "Нет ответа"))
+
+    # 5. /help
     help_message = FakeMessage()
     help_update = FakeUpdate(effective_user=user, effective_chat=chat, message=help_message)
-    await help_command(help_update, FakeContext())
+    await help_command(help_update, context)
     help_ok = bool(help_message.replies) and "/models" in help_message.replies[0]
+    results.append(("Команда /help", help_ok, help_message.replies[0] if help_message.replies else "Нет ответа"))
+
+    # 6. /models
+    models_hint_message = FakeMessage()
+    models_hint_update = FakeUpdate(
+        effective_user=user,
+        effective_chat=chat,
+        message=models_hint_message,
+    )
+    await models_command(models_hint_update, context)
+    models_hint_ok = bool(models_hint_message.replies) and "/models_free" in models_hint_message.replies[0]
     results.append(
-        ("Команда /help", help_ok, help_message.replies[0] if help_message.replies else "Нет ответа")
+        (
+            "Команда /models",
+            models_hint_ok,
+            models_hint_message.replies[0] if models_hint_message.replies else "Нет ответа",
+        )
     )
 
-    # 2. /models_free без обращения к OpenRouter — подставляем тестовые данные
+    # 7. Команды списка моделей без обращения к OpenRouter
     fake_models = [
         {"id": "test/ultra-free:free", "context_length": 200_000, "pricing": {"prompt": "0"}},
+        {"id": "test/paid-pro:paid", "context_length": 120_000, "pricing": {"prompt": "0.01"}},
         {"id": "test/large-context", "context_length": 150_000, "pricing": {"prompt": "0.002"}},
+        {"id": "test/specialized-medical", "context_length": 90_000, "pricing": {"prompt": "0.004"}},
         {"id": "test/coder-instruct", "context_length": 80_000, "pricing": {"prompt": "0.001"}},
     ]
 
-    models_message = FakeMessage()
-    models_update = FakeUpdate(
-        effective_user=user,
-        effective_chat=chat,
-        message=models_message,
-    )
+    async def fake_build_messages(order, header=None, max_items_per_category=None):  # pragma: no cover - используется в офлайн-тестах
+        parts = [header or ""] if header else []
+        selected = []
+        for category in order:
+            selected.extend(model["id"] for model in fake_models if category in model.get("id", ""))
+        parts.append("\n".join(selected))
+        return parts
 
     with patch("services.generation.init_client", return_value=None), patch(
         "services.generation.fetch_models_data", AsyncMock(return_value=fake_models)
-    ):
-        await models_free_command(models_update, FakeContext())
+    ), patch("handlers.commands.build_models_messages", AsyncMock(side_effect=fake_build_messages)):
+        for cmd_name, command_fn, title in [
+            ("/models_free", models_free_command, "Команда /models_free (офлайн)"),
+            ("/models_paid", models_paid_command, "Команда /models_paid (офлайн)"),
+            ("/models_large_context", models_large_context_command, "Команда /models_large_context (офлайн)"),
+            ("/models_specialized", models_specialized_command, "Команда /models_specialized (офлайн)"),
+            ("/models_all", models_all_command, "Команда /models_all (офлайн)"),
+        ]:
+            msg = FakeMessage()
+            upd = FakeUpdate(effective_user=user, effective_chat=chat, message=msg)
+            await command_fn(upd, context)
+            ok = bool(msg.replies) and any("test/" in part for part in msg.replies)
+            results.append((title, ok, msg.replies[0][:400] if msg.replies else "Нет ответа"))
 
-    models_ok = bool(models_message.replies) and "test/ultra-free" in models_message.replies[0]
+    # 8. /consilium без вопроса
+    consilium_message = FakeMessage(text="/consilium")
+    consilium_update = FakeUpdate(effective_user=user, effective_chat=chat, message=consilium_message)
+    await consilium_command(consilium_update, context)
+    consilium_ok = bool(consilium_message.replies) and "Консилиум" in consilium_message.replies[0]
     results.append(
         (
-            "Команда /models_free (офлайн)",
-            models_ok,
-            models_message.replies[0][:400] if models_message.replies else "Нет ответа",
+            "Команда /consilium (подсказка)",
+            consilium_ok,
+            consilium_message.replies[0] if consilium_message.replies else "Нет ответа",
+        )
+    )
+
+    # 9. Настройка роутинга
+    routing_rules_message = FakeMessage()
+    routing_rules_update = FakeUpdate(
+        effective_user=user, effective_chat=chat, message=routing_rules_message
+    )
+    await routing_rules_command(routing_rules_update, context)
+    routing_rules_ok = bool(routing_rules_message.replies) and "алгоритмический" in routing_rules_message.replies[0]
+    results.append(
+        (
+            "Команда /routing_rules",
+            routing_rules_ok,
+            routing_rules_message.replies[0] if routing_rules_message.replies else "Нет ответа",
+        )
+    )
+
+    routing_llm_message = FakeMessage()
+    routing_llm_update = FakeUpdate(effective_user=user, effective_chat=chat, message=routing_llm_message)
+    await routing_llm_command(routing_llm_update, context)
+    routing_llm_ok = bool(routing_llm_message.replies) and "LLM" in routing_llm_message.replies[0]
+    results.append(
+        (
+            "Команда /routing_llm",
+            routing_llm_ok,
+            routing_llm_message.replies[0] if routing_llm_message.replies else "Нет ответа",
+        )
+    )
+
+    routing_mode_message = FakeMessage()
+    routing_mode_update = FakeUpdate(
+        effective_user=user, effective_chat=chat, message=routing_mode_message
+    )
+    await routing_mode_command(routing_mode_update, context)
+    routing_mode_ok = bool(routing_mode_message.replies) and "роутинга" in routing_mode_message.replies[0]
+    results.append(
+        (
+            "Команда /routing_mode",
+            routing_mode_ok,
+            routing_mode_message.replies[0] if routing_mode_message.replies else "Нет ответа",
         )
     )
 
@@ -159,6 +297,17 @@ async def run_smoke_tests(
 
     clear_memory(chat_id, user_id)
     results: List[Tuple[str, bool, str]] = []
+
+    # 0. Доступность базового API
+    api_models = await fetch_models_data()
+    api_ok = bool(api_models)
+    results.append(
+        (
+            "Доступность API (models)",
+            api_ok,
+            f"Получено {len(api_models)} моделей" if api_ok else "Не удалось получить список моделей",
+        )
+    )
 
     # 1. Доступность основной модели
     is_default_available = await check_model_availability(model)
