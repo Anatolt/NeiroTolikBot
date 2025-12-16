@@ -19,6 +19,8 @@ from handlers.commands import (
     start,
     admin_command,
     consilium_command,
+    header_off_command,
+    header_on_command,
     routing_llm_command,
     routing_mode_command,
     routing_rules_command,
@@ -135,6 +137,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("models_specialized", models_specialized_command))
     application.add_handler(CommandHandler("models_all", models_all_command))
     application.add_handler(CommandHandler("consilium", consilium_command))
+    application.add_handler(CommandHandler("header_on", header_on_command))
+    application.add_handler(CommandHandler("header_off", header_off_command))
     application.add_handler(CommandHandler("routing_rules", routing_rules_command))
     application.add_handler(CommandHandler("routing_llm", routing_llm_command))
     application.add_handler(CommandHandler("routing_mode", routing_mode_command))

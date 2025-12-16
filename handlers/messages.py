@@ -11,7 +11,14 @@ from services.generation import (
     generate_image,
     generate_text,
 )
-from services.memory import add_message, get_history, get_routing_mode, set_routing_mode
+from services.memory import (
+    add_message,
+    get_history,
+    get_routing_mode,
+    get_show_response_header,
+    set_routing_mode,
+    set_show_response_header,
+)
 from services.web_search import search_web
 from services.consilium import (
     parse_models_from_message,
@@ -47,6 +54,26 @@ _ROUTING_STATUS_KEYWORDS = {
     "routing mode",
 }
 
+_HEADER_DISABLE_KEYWORDS = {
+    "спрячь шапку",
+    "скрой шапку",
+    "скрыть шапку",
+    "выключи шапку",
+    "отключи шапку",
+    "убери шапку",
+    "без шапки",
+    "скрой техшапку",
+}
+
+_HEADER_ENABLE_KEYWORDS = {
+    "включи шапку",
+    "показывай шапку",
+    "верни шапку",
+    "покажи шапку",
+    "включи техшапку",
+    "техшапка вкл",
+}
+
 
 def _normalize_routing_choice(text: str) -> str | None:
     normalized = text.strip().lower()
@@ -61,6 +88,15 @@ def _is_routing_status_request(text: str) -> bool:
     return text.strip().lower() in _ROUTING_STATUS_KEYWORDS
 
 
+def _normalize_header_toggle(text: str) -> bool | None:
+    normalized = text.strip().lower()
+    if normalized in _HEADER_DISABLE_KEYWORDS:
+        return False
+    if normalized in _HEADER_ENABLE_KEYWORDS:
+        return True
+    return None
+
+
 def _format_response_header(
     routing_mode: str | None, context_info: dict | None, model: str | None
 ) -> str | None:
@@ -72,11 +108,31 @@ def _format_response_header(
 
     if context_info:
         tokens = context_info.get("usage_tokens")
+        chars = context_info.get("usage_chars")
         limit = context_info.get("context_limit")
+
+        context_chunks: list[str] = []
         if tokens and limit:
-            parts.append(f"📦 Контекст: {tokens}/{limit} токенов")
+            context_chunks.append(f"{tokens}/{limit} т")
         elif tokens:
-            parts.append(f"📦 Контекст: {tokens} токенов")
+            context_chunks.append(f"{tokens} т")
+
+        if chars:
+            context_chunks.append(f"{chars} симв")
+
+        if context_chunks:
+            parts.append(f"📦 Контекст: {' • '.join(context_chunks)}")
+
+        trimmed = context_info.get("trimmed_from_context")
+        if trimmed:
+            parts.append(f"✂️ Обрезано: {trimmed}")
+
+        if context_info.get("summary_text"):
+            parts.append("🧾 Саммари истории")
+
+        warnings = context_info.get("warnings") or []
+        if warnings:
+            parts.append(f"⚠️ {warnings[0]}")
 
     if model:
         parts.append(f"🤖 Модель: {model}")
@@ -162,6 +218,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_type = message.chat.type
     chat_id = str(message.chat_id)
     user_id = str(message.from_user.id)
+    show_response_header = get_show_response_header(chat_id, user_id)
     effective_text = text
 
     # Проверка ввода пароля администратора
@@ -222,6 +279,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Group chat message, extracted text: '{effective_text}'")
 
     # Индивидуальное переключение режима роутинга через текстовые команды
+    header_toggle = _normalize_header_toggle(effective_text)
+    if header_toggle is not None:
+        set_show_response_header(chat_id, user_id, header_toggle)
+        reply = (
+            "🛠 Техшапка включена и будет показываться над ответами.\n"
+            "Чтобы скрыть, отправьте 'скрыть шапку' или команду /header_off."
+        )
+        if not header_toggle:
+            reply = (
+                "🫥 Техшапка скрыта.\n"
+                "Чтобы вернуть её, отправьте 'показывай шапку' или команду /header_on."
+            )
+
+        await message.reply_text(reply)
+        return
+
     routing_choice = _normalize_routing_choice(effective_text)
     if routing_choice:
         set_routing_mode(chat_id, user_id, routing_choice)
@@ -328,7 +401,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        header = _format_response_header(user_routing_mode, context_info, used_model)
+        header = (
+            _format_response_header(user_routing_mode, context_info, used_model)
+            if show_response_header
+            else None
+        )
         reply_text = f"{header}\n\n{response}" if header else response
         await message.reply_text(reply_text)
     
@@ -397,7 +474,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        header = _format_response_header(user_routing_mode, context_info, used_model)
+        header = (
+            _format_response_header(user_routing_mode, context_info, used_model)
+            if show_response_header
+            else None
+        )
         reply_text = f"{header}\n\n{response}" if header else response
         await message.reply_text(reply_text)
     
@@ -503,7 +584,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         add_message(chat_id, user_id, "assistant", used_model, response)
         
         # Отправляем ответ
-        header = _format_response_header(user_routing_mode, context_info, used_model)
+        header = (
+            _format_response_header(user_routing_mode, context_info, used_model)
+            if show_response_header
+            else None
+        )
         reply_text = f"{header}\n\n{response}" if header else response
         await message.reply_text(reply_text)
     else:
