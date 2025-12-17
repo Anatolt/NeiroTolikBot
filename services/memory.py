@@ -62,6 +62,7 @@ def init_db():
         user_id TEXT NOT NULL,
         routing_mode TEXT,
         show_response_header BOOLEAN DEFAULT 1,
+        preferred_model TEXT,
         updated_at DATETIME NOT NULL,
         UNIQUE(chat_id, user_id)
     )
@@ -72,6 +73,8 @@ def init_db():
     existing_columns = {row[1] for row in cursor.fetchall()}
     if "show_response_header" not in existing_columns:
         cursor.execute("ALTER TABLE user_settings ADD COLUMN show_response_header BOOLEAN DEFAULT 1")
+    if "preferred_model" not in existing_columns:
+        cursor.execute("ALTER TABLE user_settings ADD COLUMN preferred_model TEXT")
 
     conn.commit()
     conn.close()
@@ -274,6 +277,40 @@ def get_routing_mode(chat_id: str, user_id: str) -> Optional[str]:
 
     cursor.execute(
         "SELECT routing_mode FROM user_settings WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result and result[0] else None
+
+
+def set_preferred_model(chat_id: str, user_id: str, preferred_model: Optional[str]) -> None:
+    """Сохраняет выбранную пользователем модель по умолчанию."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO user_settings (chat_id, user_id, preferred_model, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id, user_id)
+        DO UPDATE SET preferred_model=excluded.preferred_model, updated_at=excluded.updated_at
+        """,
+        (chat_id, user_id, preferred_model, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_preferred_model(chat_id: str, user_id: str) -> Optional[str]:
+    """Возвращает сохранённую модель пользователя, если она есть."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT preferred_model FROM user_settings WHERE chat_id = ? AND user_id = ?",
         (chat_id, user_id),
     )
     result = cursor.fetchone()
