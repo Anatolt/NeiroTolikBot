@@ -14,9 +14,11 @@ from services.generation import (
 from services.memory import (
     add_message,
     get_history,
+    get_preferred_model,
     get_routing_mode,
     get_show_response_header,
     set_routing_mode,
+    set_preferred_model,
     set_show_response_header,
 )
 from services.web_search import search_web
@@ -73,6 +75,28 @@ _HEADER_ENABLE_KEYWORDS = {
     "включи техшапку",
     "техшапка вкл",
 }
+
+_MODEL_PREFERENCE_PATTERN = re.compile(r"^отвечай\s+всегда\s+(?:с|через)\s+(.+)$", re.IGNORECASE)
+_MODEL_PREFERENCE_RESET_KEYWORDS = {
+    "отвечай как обычно",
+    "используй стандартную модель",
+    "сбрось модель",
+    "отключи модель по умолчанию",
+}
+
+
+def _resolve_model_alias(model_text: str) -> str | None:
+    models = BOT_CONFIG.get("MODELS", {})
+    normalized = model_text.strip().lower()
+
+    if normalized in models:
+        return models[normalized]
+
+    for value in models.values():
+        if normalized == value.lower():
+            return value
+
+    return None
 
 
 def _normalize_routing_choice(text: str) -> str | None:
@@ -219,6 +243,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = str(message.chat_id)
     user_id = str(message.from_user.id)
     show_response_header = get_show_response_header(chat_id, user_id)
+    preferred_model = get_preferred_model(chat_id, user_id)
     effective_text = text
 
     # Проверка ввода пароля администратора
@@ -277,6 +302,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         logger.info(f"Group chat message, extracted text: '{effective_text}'")
+
+    normalized_text = effective_text.strip()
+
+    if normalized_text.lower() in _MODEL_PREFERENCE_RESET_KEYWORDS:
+        set_preferred_model(chat_id, user_id, None)
+        await message.reply_text(
+            "🔄 Вернулся к стандартной модели. Чтобы снова закрепить модель, напиши 'отвечай всегда с gpt'."
+        )
+        return
+
+    model_preference_match = _MODEL_PREFERENCE_PATTERN.match(normalized_text)
+    if model_preference_match:
+        requested_model = model_preference_match.group(1).strip()
+        resolved_model = _resolve_model_alias(requested_model)
+
+        if not resolved_model:
+            available_aliases = ", ".join(sorted(BOT_CONFIG.get("MODELS", {}).keys()))
+            await message.reply_text(
+                f"❌ Я не знаю модель '{requested_model}'. Доступные варианты: {available_aliases}."
+            )
+            return
+
+        set_preferred_model(chat_id, user_id, resolved_model)
+        preferred_model = resolved_model
+        await message.reply_text(
+            "✅ Запомнил: буду отвечать через выбранную модель, пока не попросишь иначе. "
+            "Чтобы вернуться к стандартной, напиши 'отвечай как обычно'."
+        )
+        return
 
     # Индивидуальное переключение режима роутинга через текстовые команды
     header_toggle = _normalize_header_toggle(effective_text)
@@ -388,7 +442,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Processing web search request: '{content}'")
         chat_id = str(message.chat_id)
         user_id = str(message.from_user.id)
-        model_name = model or BOT_CONFIG["DEFAULT_MODEL"]
+        model_name = model or preferred_model or BOT_CONFIG["DEFAULT_MODEL"]
         
         await message.reply_text("Ищу информацию в интернете...")
         
@@ -431,7 +485,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info("Processing web search for previous message")
         chat_id = str(message.chat_id)
         user_id = str(message.from_user.id)
-        model_name = model or BOT_CONFIG["DEFAULT_MODEL"]
+        model_name = model or preferred_model or BOT_CONFIG["DEFAULT_MODEL"]
         
         # Получаем историю сообщений
         history = get_history(chat_id, user_id, limit=10)
@@ -593,7 +647,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Добавляем сообщение в историю
         chat_id = str(message.chat_id)
         user_id = str(message.from_user.id)
-        model_name = model or BOT_CONFIG["DEFAULT_MODEL"]
+        model_name = model or preferred_model or BOT_CONFIG["DEFAULT_MODEL"]
         add_message(chat_id, user_id, "user", model_name, content)
         
         # Генерируем ответ
