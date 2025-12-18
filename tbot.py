@@ -41,6 +41,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 # Загрузка конфигурации из .env
 BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_CONFIG["DISCORD_BOT_TOKEN"] = os.getenv("DISCORD_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)

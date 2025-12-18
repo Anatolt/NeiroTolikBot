@@ -1,6 +1,6 @@
 # NeiroTolikBot
 
-Telegram бот с поддержкой генерации текста через OpenRouter и изображений через PiAPI.ai.
+Telegram и Discord бот с поддержкой генерации текста через OpenRouter и изображений через PiAPI.ai.
 
 ### Основные функции
 - [x] Генерация изображений
@@ -108,7 +108,8 @@ Telegram бот с поддержкой генерации текста чере
 NeiroTolikBot/
 ├── handlers/              # Обработчики команд и сообщений
 │   ├── commands.py       # Обработчики команд (например, /start)
-│   └── messages.py       # Обработчики сообщений и логика маршрутизации
+│   ├── messages.py       # Обработчики сообщений Telegram
+│   └── message_service.py # Общая бизнес-логика для всех платформ
 ├── services/             # Сервисы генерации и другие сервисы
 │   ├── generation.py     # Функции для генерации текста и изображений
 │   ├── memory.py        # Управление памятью и контекстом диалогов
@@ -116,7 +117,8 @@ NeiroTolikBot/
 ├── utils/                # Вспомогательные функции
 │   └── helpers.py        # Утилиты (экранирование, инициализация)
 ├── config.py            # Конфигурация бота
-├── tbot.py              # Основной файл бота
+├── tbot.py              # Основной файл Telegram-бота
+├── discord_bot.py       # Основной файл Discord-бота
 ├── .env                 # Переменные окружения
 └── README.md           # Документация
 ```
@@ -139,6 +141,7 @@ NeiroTolikBot/
 3. Создайте файл `.env` со следующими переменными:
    ```
    TELEGRAM_BOT_TOKEN=ваш_токен_бота
+   DISCORD_BOT_TOKEN=ваш_discord_бот_token
    OPENROUTER_API_KEY=ваш_ключ_openrouter
    PIAPI_KEY=ваш_ключ_piapi (опционально)
    CUSTOM_SYSTEM_PROMPT=ваш_промпт (опционально)
@@ -148,6 +151,22 @@ NeiroTolikBot/
    ```bash
    python tbot.py
    ```
+
+### Запуск Discord бота
+
+1. Создайте Discord-приложение и бота в [Developer Portal](https://discord.com/developers/applications).
+2. На вкладке **Bot** включите привилегированные интенты: `MESSAGE CONTENT INTENT` (для чтения текста), `SERVER MEMBERS INTENT` не требуется, но оставьте включенными `MESSAGE CONTENT` и базовые `GUILD`/`MESSAGE`.
+3. Скопируйте токен бота и пропишите его в `.env` как `DISCORD_BOT_TOKEN=<ваш_токен>` вместе с `OPENROUTER_API_KEY`.
+4. Добавьте бота на сервер: вкладка **OAuth2 → URL Generator**, отметьте `bot` и `applications.commands`, дайте права `Send Messages`/`Read Message History`, перейдите по сгенерированной ссылке.
+5. Запустите Discord-бота отдельной точкой входа:
+   ```bash
+   python discord_bot.py
+   ```
+6. Поведение в Discord:
+   - бот игнорирует собственные сообщения;
+   - в серверах отвечает только на упоминание `@ИмяБота` или сообщения с префиксами `!`/`/`;
+   - в личных сообщениях отвечает на любой текст;
+   - доступны команды `!start`/`/start` с подсказками по использованию.
 
 ### Запуск как systemd-сервис
 
