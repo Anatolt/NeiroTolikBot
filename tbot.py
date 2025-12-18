@@ -15,6 +15,7 @@ from handlers.commands import (
     models_large_context_command,
     models_paid_command,
     models_specialized_command,
+    selftest_command,
     new_dialog,
     start,
     admin_command,
@@ -129,6 +130,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("models_specialized", models_specialized_command))
     application.add_handler(CommandHandler("models_all", models_all_command))
     application.add_handler(CommandHandler("consilium", consilium_command))
+    application.add_handler(CommandHandler("selftest", selftest_command))
     application.add_handler(CommandHandler("header_on", header_on_command))
     application.add_handler(CommandHandler("header_off", header_off_command))
     application.add_handler(CommandHandler("routing_rules", routing_rules_command))
