@@ -57,7 +57,7 @@ from handlers.commands import (
     routing_rules_command,
     start,
 )
-from utils.helpers import resolve_system_prompt
+from utils.helpers import escape_markdown_v2, resolve_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +143,13 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     start_message = FakeMessage()
     start_update = FakeUpdate(effective_user=user, effective_chat=chat, message=start_message)
     await start(start_update, context)
-    start_ok = bool(start_message.replies) and BOT_CONFIG["DEFAULT_MODEL"] in start_message.replies[0]
-    results.append(("Команда /start", start_ok, start_message.replies[0] if start_message.replies else "Нет ответа"))
+    start_reply = start_message.replies[0] if start_message.replies else ""
+    default_model = BOT_CONFIG["DEFAULT_MODEL"]
+    default_model_escaped = escape_markdown_v2(default_model)
+    start_ok = bool(start_message.replies) and (
+        default_model in start_reply or default_model_escaped in start_reply
+    )
+    results.append(("Команда /start", start_ok, start_reply if start_message.replies else "Нет ответа"))
 
     # 2. /new
     new_message = FakeMessage()
@@ -195,7 +200,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     fake_models = [
         {"id": "test/ultra-free:free", "context_length": 200_000, "pricing": {"prompt": "0"}},
         {"id": "test/paid-pro:paid", "context_length": 120_000, "pricing": {"prompt": "0.01"}},
-        {"id": "test/large-context", "context_length": 150_000, "pricing": {"prompt": "0.002"}},
+        {"id": "test/large_context", "context_length": 150_000, "pricing": {"prompt": "0.002"}},
         {"id": "test/specialized-medical", "context_length": 90_000, "pricing": {"prompt": "0.004"}},
         {"id": "test/coder-instruct", "context_length": 80_000, "pricing": {"prompt": "0.001"}},
     ]
