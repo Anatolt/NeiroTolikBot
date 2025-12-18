@@ -2,6 +2,7 @@
 BOT_CONFIG = {
     # API Keys (loaded from .env)
     "TELEGRAM_BOT_TOKEN": None,  # Will be loaded from .env
+    "DISCORD_BOT_TOKEN": None,  # Will be loaded from .env
     "OPENROUTER_API_KEY": None,  # Will be loaded from .env
     "PIAPI_KEY": None,  # Will be loaded from .env
     
