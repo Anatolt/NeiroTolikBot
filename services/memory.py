@@ -54,6 +54,33 @@ def init_db():
     )
     ''')
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS telegram_chats (
+        chat_id TEXT PRIMARY KEY,
+        title TEXT,
+        chat_type TEXT,
+        updated_at DATETIME NOT NULL
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS discord_voice_channels (
+        channel_id TEXT PRIMARY KEY,
+        channel_name TEXT,
+        guild_id TEXT,
+        guild_name TEXT,
+        updated_at DATETIME NOT NULL
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS notification_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at DATETIME NOT NULL
+    )
+    ''')
+
     # Таблица пользовательских настроек (например, выбор режима роутинга)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS user_settings (
@@ -237,6 +264,118 @@ def get_all_admins() -> List[Dict[str, Any]]:
     conn.close()
     
     return [dict(row) for row in rows]
+
+def upsert_telegram_chat(chat_id: str, title: Optional[str], chat_type: Optional[str]) -> None:
+    """Сохраняет или обновляет информацию о чате Telegram."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO telegram_chats (chat_id, title, chat_type, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id)
+        DO UPDATE SET title=excluded.title, chat_type=excluded.chat_type, updated_at=excluded.updated_at
+        """,
+        (chat_id, title, chat_type, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_telegram_chats() -> List[Dict[str, Any]]:
+    """Возвращает список всех чатов Telegram, где видели бота."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT chat_id, title, chat_type FROM telegram_chats ORDER BY updated_at DESC")
+    rows = cursor.fetchall()
+
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def upsert_discord_voice_channel(
+    channel_id: str,
+    channel_name: Optional[str],
+    guild_id: Optional[str],
+    guild_name: Optional[str],
+) -> None:
+    """Сохраняет или обновляет информацию о голосовом канале Discord."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO discord_voice_channels (channel_id, channel_name, guild_id, guild_name, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(channel_id)
+        DO UPDATE SET
+            channel_name=excluded.channel_name,
+            guild_id=excluded.guild_id,
+            guild_name=excluded.guild_name,
+            updated_at=excluded.updated_at
+        """,
+        (channel_id, channel_name, guild_id, guild_name, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_discord_voice_channels() -> List[Dict[str, Any]]:
+    """Возвращает список известных голосовых каналов Discord."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT channel_id, channel_name, guild_id, guild_name
+        FROM discord_voice_channels
+        ORDER BY guild_name, channel_name
+        """
+    )
+    rows = cursor.fetchall()
+
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def set_voice_notification_chat_id(chat_id: str) -> None:
+    """Сохраняет чат Telegram, куда отправлять уведомления о Discord."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        ("voice_notification_chat_id", chat_id, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_voice_notification_chat_id() -> Optional[str]:
+    """Возвращает чат Telegram для уведомлений о Discord."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        ("voice_notification_chat_id",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result else None
 
 def remove_admin(chat_id: str, user_id: str) -> None:
     """Удаление администратора из базы данных."""
