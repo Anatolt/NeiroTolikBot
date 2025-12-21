@@ -9,12 +9,16 @@ from utils.helpers import post_init, notify_admins_on_startup, resolve_system_pr
 from handlers.commands import (
     clear_memory_command,
     help_command,
+    admin_help_command,
     models_all_command,
     models_command,
     models_free_command,
     models_large_context_command,
     models_paid_command,
     models_specialized_command,
+    setflow_command,
+    show_discord_chats_command,
+    show_tg_chats_command,
     selftest_command,
     new_dialog,
     start,
@@ -26,6 +30,7 @@ from handlers.commands import (
     routing_mode_command,
     routing_rules_command,
 )
+from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
 from services.generation import (
     init_client,
@@ -118,11 +123,13 @@ async def main() -> None:
     )
 
     # Регистрация обработчиков команд
+    application.add_handler(MessageHandler(filters.ALL, track_chat), group=0)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("new", new_dialog))
     application.add_handler(CommandHandler("clear", clear_memory_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("admin_help", admin_help_command))
     application.add_handler(CommandHandler("models", models_command))
     application.add_handler(CommandHandler("models_free", models_free_command))
     application.add_handler(CommandHandler("models_paid", models_paid_command))
@@ -136,6 +143,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("routing_rules", routing_rules_command))
     application.add_handler(CommandHandler("routing_llm", routing_llm_command))
     application.add_handler(CommandHandler("routing_mode", routing_mode_command))
+    application.add_handler(CommandHandler("setflow", setflow_command))
+    application.add_handler(CommandHandler("show_discord_chats", show_discord_chats_command))
+    application.add_handler(CommandHandler("show_tg_chats", show_tg_chats_command))
     
     # Обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -39,9 +39,18 @@ from services.generation import (
     generate_text,
     init_client,
 )
-from services.memory import add_message, clear_memory, get_history, init_db
+from services.memory import (
+    add_message,
+    clear_memory,
+    get_history,
+    init_db,
+    set_voice_notification_chat_id,
+    upsert_discord_voice_channel,
+    upsert_telegram_chat,
+)
 from handlers.commands import (
     admin_command,
+    admin_help_command,
     clear_memory_command,
     consilium_command,
     help_command,
@@ -55,6 +64,9 @@ from handlers.commands import (
     routing_llm_command,
     routing_mode_command,
     routing_rules_command,
+    setflow_command,
+    show_discord_chats_command,
+    show_tg_chats_command,
     start,
 )
 from utils.helpers import escape_markdown_v2, resolve_system_prompt
@@ -127,6 +139,7 @@ class FakeContext:
 
     bot_data: dict = field(default_factory=dict)
     user_data: dict = field(default_factory=dict)
+    args: list[str] = field(default_factory=list)
 
 
 async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool, str]]:
@@ -136,6 +149,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     user = FakeUser(id=user_id)
     chat = FakeChat(id=chat_id)
     context = FakeContext()
+    admin_context = FakeContext(user_data={"is_admin": True})
 
     init_db()
 
@@ -178,6 +192,19 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     await help_command(help_update, context)
     help_ok = bool(help_message.replies) and "/models" in help_message.replies[0]
     results.append(("Команда /help", help_ok, help_message.replies[0] if help_message.replies else "Нет ответа"))
+
+    # 5.1 /admin_help
+    admin_help_message = FakeMessage()
+    admin_help_update = FakeUpdate(effective_user=user, effective_chat=chat, message=admin_help_message)
+    await admin_help_command(admin_help_update, admin_context)
+    admin_help_ok = bool(admin_help_message.replies) and "Команды администратора" in admin_help_message.replies[0]
+    results.append(
+        (
+            "Команда /admin_help",
+            admin_help_ok,
+            admin_help_message.replies[0] if admin_help_message.replies else "Нет ответа",
+        )
+    )
 
     # 6. /models
     models_hint_message = FakeMessage()
@@ -239,6 +266,48 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
             "Команда /consilium (подсказка)",
             consilium_ok,
             consilium_message.replies[0] if consilium_message.replies else "Нет ответа",
+        )
+    )
+
+    # 8.1 Админские команды списка чатов и настройка потока
+    upsert_telegram_chat("123", "Test Chat", "group")
+    upsert_discord_voice_channel("456", "Voice Room", "789", "Test Guild")
+
+    show_discord_message = FakeMessage()
+    show_discord_update = FakeUpdate(effective_user=user, effective_chat=chat, message=show_discord_message)
+    await show_discord_chats_command(show_discord_update, admin_context)
+    show_discord_ok = bool(show_discord_message.replies) and "Voice Room" in show_discord_message.replies[0]
+    results.append(
+        (
+            "Команда /show_discord_chats",
+            show_discord_ok,
+            show_discord_message.replies[0] if show_discord_message.replies else "Нет ответа",
+        )
+    )
+
+    show_tg_message = FakeMessage()
+    show_tg_update = FakeUpdate(effective_user=user, effective_chat=chat, message=show_tg_message)
+    await show_tg_chats_command(show_tg_update, admin_context)
+    show_tg_ok = bool(show_tg_message.replies) and "Test Chat" in show_tg_message.replies[0]
+    results.append(
+        (
+            "Команда /show_tg_chats",
+            show_tg_ok,
+            show_tg_message.replies[0] if show_tg_message.replies else "Нет ответа",
+        )
+    )
+
+    setflow_context = FakeContext(user_data={"is_admin": True}, args=["123"])
+    setflow_message = FakeMessage()
+    setflow_update = FakeUpdate(effective_user=user, effective_chat=chat, message=setflow_message)
+    set_voice_notification_chat_id("999")
+    await setflow_command(setflow_update, setflow_context)
+    setflow_ok = bool(setflow_message.replies) and "123" in setflow_message.replies[0]
+    results.append(
+        (
+            "Команда /setflow",
+            setflow_ok,
+            setflow_message.replies[0] if setflow_message.replies else "Нет ответа",
         )
     )
 

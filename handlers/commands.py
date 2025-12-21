@@ -9,9 +9,12 @@ from services.memory import (
     add_admin,
     add_message,
     clear_memory,
+    get_discord_voice_channels,
+    get_telegram_chats,
     get_all_admins,
     get_routing_mode,
     is_admin,
+    set_voice_notification_chat_id,
     set_routing_mode,
     set_show_response_header,
     start_new_dialog,
@@ -36,6 +39,59 @@ MODELS_HINT_TEXT = (
     "• /models_all — полный список (может быть длинным)\n\n"
     "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
 )
+
+ADMIN_COMMANDS_TEXT = (
+    "👑 Команды администратора:\n"
+    "• /setflow — выбрать чат для уведомлений о Discord\n"
+    "• /show_discord_chats — показать голосовые чаты Discord\n"
+    "• /show_tg_chats — показать чаты Telegram, где есть бот\n"
+    "• /admin_help — показать эту справку\n"
+    "\n"
+    "Текстовые команды:\n"
+    "• покажи чаты дискорд\n"
+    "• покажи чаты тг"
+)
+
+
+def _is_admin_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    return is_admin(chat_id, user_id) or context.user_data.get("is_admin", False)
+
+
+def _format_discord_voice_channels() -> str:
+    channels = get_discord_voice_channels()
+    if not channels:
+        return "Не нашёл голосовые чаты Discord. Проверь, что Discord-бот запущен."
+
+    grouped: dict[str, list[str]] = {}
+    for channel in channels:
+        guild_name = channel.get("guild_name") or "Без сервера"
+        channel_name = channel.get("channel_name") or channel.get("channel_id")
+        grouped.setdefault(guild_name, []).append(channel_name)
+
+    lines = ["🎧 Голосовые чаты Discord:"]
+    for guild_name, channel_names in grouped.items():
+        lines.append(f"\n{guild_name}:")
+        for name in channel_names:
+            lines.append(f"• {name}")
+
+    return "\n".join(lines)
+
+
+def _format_telegram_chats() -> str:
+    chats = get_telegram_chats()
+    if not chats:
+        return "Не нашёл чаты Telegram. Напишите боту хотя бы одно сообщение в нужном чате."
+
+    lines = ["💬 Чаты Telegram:"]
+    for chat in chats:
+        title = chat.get("title") or "Без названия"
+        chat_type = chat.get("chat_type") or "unknown"
+        chat_id = chat.get("chat_id")
+        lines.append(f"• {title} ({chat_type}) — {chat_id}")
+
+    return "\n".join(lines)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
@@ -129,6 +185,56 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     
     await update.message.reply_text(text=text)
+
+
+async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Справка по административным командам."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    await update.message.reply_text(ADMIN_COMMANDS_TEXT)
+
+
+async def show_discord_chats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает список голосовых чатов Discord (для админов)."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    await update.message.reply_text(_format_discord_voice_channels())
+
+
+async def show_tg_chats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает список чатов Telegram (для админов)."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    await update.message.reply_text(_format_telegram_chats())
+
+
+async def setflow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Настраивает чат Telegram для уведомлений о Discord."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    args = context.args or []
+    if args:
+        chat_id = args[0]
+        set_voice_notification_chat_id(chat_id)
+        await update.message.reply_text(f"Готово! Уведомления будут отправляться в чат {chat_id}.")
+        return
+
+    discord_info = _format_discord_voice_channels()
+    telegram_info = _format_telegram_chats()
+    instruction = (
+        "\n\nЧтобы выбрать чат для уведомлений, отправьте:\n"
+        "/setflow <chat_id>"
+    )
+
+    await update.message.reply_text(f"{discord_info}\n\n{telegram_info}{instruction}")
 
 
 def _format_routing_mode_label(mode: str) -> str:
