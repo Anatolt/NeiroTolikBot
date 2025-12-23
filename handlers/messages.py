@@ -5,6 +5,7 @@ from telegram.constants import ChatType
 from telegram.ext import ContextTypes
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
+from handlers.commands import show_discord_chats_command, show_tg_chats_command
 from services.memory import add_admin, is_admin
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = str(message.chat_id)
     user_id = str(message.from_user.id)
     effective_text = text
+    normalized_text = text.strip().lower()
 
     # Проверка ввода пароля администратора
     if context.user_data.get("awaiting_admin_pass"):
@@ -38,6 +40,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
         else:
             await message.reply_text("Неверный пароль.")
+        return
+
+    if normalized_text in {"покажи чаты дискорд", "покажи чаты тг"}:
+        if normalized_text == "покажи чаты дискорд":
+            await show_discord_chats_command(update, context)
+        else:
+            await show_tg_chats_command(update, context)
         return
     
     # Добавляем подробное логирование для всех сообщений

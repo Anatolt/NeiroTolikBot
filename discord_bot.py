@@ -11,8 +11,13 @@ from dotenv import load_dotenv
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from services.generation import check_model_availability, init_client, refresh_models_from_api
-from services.memory import init_db
+from services.memory import (
+    get_voice_notification_chat_id,
+    init_db,
+    upsert_discord_voice_channel,
+)
 from utils.helpers import resolve_system_prompt
+from telegram import Bot
 
 load_dotenv()
 
@@ -40,6 +45,7 @@ intents.guilds = True
 intents.dm_messages = True
 
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(*COMMAND_PREFIXES), intents=intents)
+telegram_bot = Bot(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]) if BOT_CONFIG.get("TELEGRAM_BOT_TOKEN") else None
 
 # Инициализация клиентов и БД
 init_client()
@@ -115,6 +121,31 @@ async def _send_responses(message: discord.Message, clean_content: str) -> None:
             await message.channel.send(response.text)
 
 
+def _sync_discord_voice_channels() -> None:
+    for guild in bot.guilds:
+        for channel in list(guild.voice_channels) + list(guild.stage_channels):
+            upsert_discord_voice_channel(
+                channel_id=str(channel.id),
+                channel_name=channel.name,
+                guild_id=str(guild.id),
+                guild_name=guild.name,
+            )
+
+
+async def _send_telegram_notification(text: str) -> None:
+    chat_id = get_voice_notification_chat_id()
+    if not chat_id:
+        return
+    if not telegram_bot:
+        logger.warning("Telegram bot token not configured, cannot send notifications.")
+        return
+
+    try:
+        await telegram_bot.send_message(chat_id=int(chat_id), text=text)
+    except Exception as exc:
+        logger.warning("Failed to send Telegram notification: %s", exc)
+
+
 async def _handle_dm_message(message: discord.Message, clean_content: str) -> None:
     await _send_responses(message, clean_content)
 
@@ -142,6 +173,7 @@ async def _handle_guild_message(message: discord.Message, clean_content: str) ->
 @bot.event
 async def on_ready():
     logger.info("Discord bot connected as %s (id=%s)", bot.user, bot.user.id if bot.user else "n/a")
+    _sync_discord_voice_channels()
 
 
 @bot.command(name="start")
@@ -169,6 +201,25 @@ async def on_message(message: discord.Message) -> None:
         await _handle_guild_message(message, content)
 
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+) -> None:
+    if member.bot:
+        return
+
+    if before.channel is None and after.channel is not None:
+        channel = after.channel
+        guild_name = channel.guild.name if channel.guild else "Discord"
+        notification = (
+            f"🎧 {member.display_name} подключился к голосовому каналу "
+            f"«{channel.name}» ({guild_name})."
+        )
+        await _send_telegram_notification(notification)
 
 
 async def main() -> None:
