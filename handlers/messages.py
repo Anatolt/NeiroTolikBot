@@ -6,7 +6,13 @@ from telegram.ext import ContextTypes
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from handlers.commands import show_discord_chats_command, show_tg_chats_command
-from services.memory import add_admin, is_admin
+from services.memory import (
+    add_admin,
+    get_latest_pending_discord_join_request,
+    get_pending_discord_join_requests,
+    is_admin,
+    set_discord_join_request_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await show_discord_chats_command(update, context)
         else:
             await show_tg_chats_command(update, context)
+        return
+
+    if (
+        chat_type == ChatType.PRIVATE
+        and is_admin(chat_id, user_id)
+        and normalized_text.startswith(("yes", "no"))
+    ):
+        parts = normalized_text.split()
+        decision = parts[0]
+        request_id = None
+        if len(parts) > 1 and parts[1].isdigit():
+            request_id = int(parts[1])
+
+        request = None
+        if request_id is not None:
+            pending = get_pending_discord_join_requests()
+            for item in pending:
+                if int(item.get("id", -1)) == request_id:
+                    request = item
+                    break
+        else:
+            request = get_latest_pending_discord_join_request()
+
+        if not request:
+            await message.reply_text("Нет ожидающих запросов.")
+            return
+
+        new_status = "approved" if decision == "yes" else "denied"
+        set_discord_join_request_status(int(request["id"]), new_status)
+        await message.reply_text(
+            f"Принято. Запрос {request['id']} — {'разрешено' if new_status == 'approved' else 'отклонено'}."
+        )
         return
     
     # Добавляем подробное логирование для всех сообщений

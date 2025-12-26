@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -12,11 +13,14 @@ from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from services.generation import check_model_availability, init_client, refresh_models_from_api
 from services.memory import (
+    create_discord_join_request,
     get_all_admins,
     get_discord_autojoin,
     get_notification_flows_for_channel,
+    get_unprocessed_discord_join_requests,
     get_voice_notification_chat_id,
     init_db,
+    mark_discord_join_request_processed,
     set_discord_autojoin,
     upsert_discord_voice_channel,
 )
@@ -55,6 +59,7 @@ bot = commands.Bot(
     help_command=None,
 )
 telegram_bot = Bot(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]) if BOT_CONFIG.get("TELEGRAM_BOT_TOKEN") else None
+_join_request_task: asyncio.Task | None = None
 
 # Инициализация клиентов и БД
 init_client()
@@ -64,6 +69,23 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+def _extract_discord_channel_link(text: str) -> tuple[str, str] | None:
+    match = re.search(r"https?://(?:www\.)?discord\.com/channels/(\d+)/(\d+)", text)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _extract_discord_invite_link(text: str) -> str | None:
+    match = re.search(
+        r"https?://(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/([A-Za-z0-9-]+)",
+        text,
+    )
+    if not match:
+        return None
+    return match.group(1)
 
 
 async def check_default_model():
@@ -196,6 +218,107 @@ async def _send_telegram_notification(text: str, discord_channel_id: str | None 
     await _send(str(chat_id))
 
 
+async def _send_telegram_join_request(request_id: int, guild_name: str, user_name: str) -> None:
+    if not telegram_bot:
+        logger.warning("Telegram bot token not configured, cannot send join request.")
+        return
+
+    admins = get_all_admins()
+    if not admins:
+        logger.warning("No admins configured; join request cannot be delivered.")
+        return
+
+    text = (
+        "Просят присоединиться к Discord.\n"
+        f"Сервер: {guild_name}\n"
+        f"Пользователь: {user_name}\n"
+        f"Запрос: {request_id}\n\n"
+        "Ответьте: yes или no (можно с номером, например: yes 12)."
+    )
+
+    for admin in admins:
+        chat_id = admin.get("chat_id")
+        if not chat_id:
+            continue
+        try:
+            await telegram_bot.send_message(chat_id=int(chat_id), text=text)
+        except Exception as exc:
+            logger.warning("Failed to send join request to admin %s: %s", chat_id, exc)
+
+
+async def _notify_discord_user(user_id: int, text: str) -> None:
+    try:
+        user = await bot.fetch_user(user_id)
+        await user.send(text)
+    except Exception as exc:
+        logger.warning("Failed to notify Discord user %s: %s", user_id, exc)
+
+
+async def _process_join_requests_loop() -> None:
+    while True:
+        requests = get_unprocessed_discord_join_requests()
+        for request in requests:
+            try:
+                request_id = int(request["id"])
+                status = request.get("status")
+                channel_id_raw = str(request.get("discord_channel_id", ""))
+                user_id = int(request["discord_user_id"])
+                guild_name = request.get("discord_guild_name") or "Discord"
+
+                if not channel_id_raw.isdigit():
+                    if status == "approved":
+                        await _notify_discord_user(
+                            user_id,
+                            "Админ разрешил. Пригласите меня на сервер «{guild_name}»: "
+                            "https://discord.com/oauth2/authorize?client_id=1451265052978974931&permissions=3147776&scope=bot%20applications.commands",
+                        )
+                    elif status == "denied":
+                        await _notify_discord_user(user_id, "Админ отказал в подключении.")
+
+                    mark_discord_join_request_processed(request_id)
+                    continue
+
+                channel_id = int(channel_id_raw)
+
+                channel = bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(channel_id)
+                    except Exception:
+                        channel = None
+
+                if status == "approved":
+                    if channel is None:
+                        await _notify_discord_user(user_id, "Админ разрешил, но я не нашёл канал.")
+                    elif channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+                        await _notify_discord_user(user_id, "Админ разрешил, но это не голосовой канал.")
+                    else:
+                        voice_client = channel.guild.voice_client
+                        try:
+                            if voice_client and voice_client.is_connected():
+                                await voice_client.move_to(channel)
+                            else:
+                                await channel.connect()
+                            await _notify_discord_user(user_id, "Админ разрешил. Подключаюсь.")
+                        except Exception as exc:
+                            await _notify_discord_user(user_id, "Админ разрешил, но не смог подключиться.")
+                            logger.warning("Failed to join voice channel: %s", exc)
+                elif status == "denied":
+                    await _notify_discord_user(user_id, "Админ отказал в подключении.")
+
+                mark_discord_join_request_processed(request_id)
+            except Exception as exc:
+                logger.warning("Failed to process join request: %s", exc)
+
+        await asyncio.sleep(3)
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild) -> None:
+    logger.info("Joined new guild: %s (%s)", guild.name, guild.id)
+    _sync_discord_voice_channels()
+
+
 async def _handle_dm_message(message: discord.Message, clean_content: str) -> None:
     await _send_responses(message, clean_content)
 
@@ -241,6 +364,10 @@ async def on_ready():
         logger.info("Discord app commands synced.")
     except Exception as exc:
         logger.warning("Failed to sync Discord app commands: %s", exc)
+
+    global _join_request_task
+    if _join_request_task is None or _join_request_task.done():
+        _join_request_task = asyncio.create_task(_process_join_requests_loop())
 
 
 @bot.command(name="start")
@@ -383,6 +510,81 @@ async def on_message(message: discord.Message) -> None:
 
     content = message.content or ""
     is_dm = message.guild is None
+
+    if is_dm and content:
+        link = _extract_discord_channel_link(content)
+        if link:
+            guild_id, channel_id = link
+            channel = bot.get_channel(int(channel_id))
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(int(channel_id))
+                except Exception:
+                    channel = None
+
+            if channel is None or not getattr(channel, "guild", None):
+                await message.channel.send("Не вижу такой канал или у меня нет доступа.")
+                return
+
+            if str(channel.guild.id) != guild_id:
+                await message.channel.send("Ссылка не совпадает с сервером канала.")
+                return
+
+            if channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+                await message.channel.send("Это не голосовой канал.")
+                return
+
+            await message.channel.send(
+                "Вижу ссылку на Discord. Пошёл спрашивать у админа, можно ли мне присоединиться."
+            )
+
+            request_id = create_discord_join_request(
+                discord_user_id=str(message.author.id),
+                discord_user_name=str(message.author),
+                discord_guild_id=str(channel.guild.id),
+                discord_guild_name=channel.guild.name,
+                discord_channel_id=str(channel.id),
+                discord_channel_name=getattr(channel, "name", str(channel.id)),
+            )
+            await _send_telegram_join_request(request_id, channel.guild.name, str(message.author))
+            return
+
+        invite_code = _extract_discord_invite_link(content)
+        if invite_code:
+            invite = None
+            try:
+                invite = await bot.fetch_invite(invite_code)
+            except Exception as exc:
+                logger.warning("Failed to fetch invite %s: %s", invite_code, exc)
+
+            if invite and invite.guild:
+                guild_name = invite.guild.name
+                guild_id = str(invite.guild.id)
+            else:
+                guild_name = "неизвестный сервер"
+                guild_id = "unknown"
+
+            channel_id = f"invite:{invite_code}"
+            channel_name = "invite"
+            if invite and invite.channel:
+                channel_name = getattr(invite.channel, "name", "invite")
+                if invite.channel.type in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+                    channel_id = str(invite.channel.id)
+
+            await message.channel.send(
+                "Вижу ссылку на Discord. Пошёл спрашивать у админа, можно ли мне присоединиться."
+            )
+
+            request_id = create_discord_join_request(
+                discord_user_id=str(message.author.id),
+                discord_user_name=str(message.author),
+                discord_guild_id=guild_id,
+                discord_guild_name=guild_name,
+                discord_channel_id=channel_id,
+                discord_channel_name=channel_name,
+            )
+            await _send_telegram_join_request(request_id, guild_name, str(message.author))
+            return
 
     ctx = await bot.get_context(message)
     if ctx.valid:

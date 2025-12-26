@@ -91,6 +91,21 @@ def init_db():
     )
     ''')
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS discord_join_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discord_user_id TEXT NOT NULL,
+        discord_user_name TEXT,
+        discord_guild_id TEXT NOT NULL,
+        discord_guild_name TEXT,
+        discord_channel_id TEXT NOT NULL,
+        discord_channel_name TEXT,
+        status TEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        processed_at DATETIME
+    )
+    ''')
+
     # Таблица пользовательских настроек (например, выбор режима роутинга)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS user_settings (
@@ -453,6 +468,148 @@ def remove_notification_flow(flow_id: int) -> None:
     cursor = conn.cursor()
 
     cursor.execute("DELETE FROM notification_flows WHERE id = ?", (flow_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def create_discord_join_request(
+    discord_user_id: str,
+    discord_user_name: Optional[str],
+    discord_guild_id: str,
+    discord_guild_name: Optional[str],
+    discord_channel_id: str,
+    discord_channel_name: Optional[str],
+) -> int:
+    """Создает запрос на подключение к Discord-каналу."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO discord_join_requests (
+            discord_user_id,
+            discord_user_name,
+            discord_guild_id,
+            discord_guild_name,
+            discord_channel_id,
+            discord_channel_name,
+            status,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            discord_user_id,
+            discord_user_name,
+            discord_guild_id,
+            discord_guild_name,
+            discord_channel_id,
+            discord_channel_name,
+            "pending",
+            datetime.now().isoformat(),
+        ),
+    )
+
+    request_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    return int(request_id)
+
+
+def get_latest_pending_discord_join_request() -> Optional[Dict[str, Any]]:
+    """Возвращает последний ожидающий запрос."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM discord_join_requests
+        WHERE status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def get_pending_discord_join_requests() -> List[Dict[str, Any]]:
+    """Возвращает все ожидающие запросы."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM discord_join_requests
+        WHERE status = 'pending'
+        ORDER BY created_at DESC
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def set_discord_join_request_status(request_id: int, status: str) -> None:
+    """Обновляет статус запроса."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE discord_join_requests
+        SET status = ?, processed_at = NULL
+        WHERE id = ?
+        """,
+        (status, request_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_unprocessed_discord_join_requests() -> List[Dict[str, Any]]:
+    """Возвращает решения, которые еще не обработаны Discord-ботом."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM discord_join_requests
+        WHERE status IN ('approved', 'denied') AND processed_at IS NULL
+        ORDER BY created_at
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def mark_discord_join_request_processed(request_id: int) -> None:
+    """Отмечает, что решение обработано Discord-ботом."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE discord_join_requests
+        SET processed_at = ?
+        WHERE id = ?
+        """,
+        (datetime.now().isoformat(), request_id),
+    )
 
     conn.commit()
     conn.close()
