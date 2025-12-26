@@ -177,6 +177,11 @@ NeiroTolikBot/
 - `/autojoin_on` — включить автоподключение к голосу
 - `/autojoin_off` — отключить автоподключение к голосу
 
+Команды Telegram (админ):
+- `/flow` — показать текущие связи Discord → Telegram
+- `/setflow` — выбрать связь Discord → Telegram (без аргументов покажет списки; пример: `/setflow 2 C`)
+- `/unsetflow` — удалить связь (без аргументов покажет список с римскими цифрами; пример: `/unsetflow ii`)
+
 ### Запуск как systemd-сервис
 
 В репозитории уже есть файл `neirotolikbot.service`.
