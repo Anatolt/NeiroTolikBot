@@ -18,12 +18,14 @@ from services.memory import (
     create_discord_join_request,
     get_all_admins,
     get_discord_autojoin,
+    get_discord_autojoin_announce_sent,
     get_notification_flows_for_channel,
     get_unprocessed_discord_join_requests,
     get_voice_notification_chat_id,
     init_db,
     mark_discord_join_request_processed,
     set_discord_autojoin,
+    set_discord_autojoin_announce_sent,
     upsert_discord_voice_channel,
 )
 from utils.helpers import resolve_system_prompt
@@ -341,6 +343,7 @@ async def _disconnect_if_empty(guild_id: int) -> None:
 async def on_guild_join(guild: discord.Guild) -> None:
     logger.info("Joined new guild: %s (%s)", guild.name, guild.id)
     _sync_discord_voice_channels()
+    set_discord_autojoin_announce_sent(str(guild.id), False)
 
 
 async def _handle_dm_message(message: discord.Message, clean_content: str) -> None:
@@ -493,6 +496,7 @@ async def autojoin_on_command(ctx: commands.Context) -> None:
         return
 
     set_discord_autojoin(str(ctx.guild.id), True)
+    set_discord_autojoin_announce_sent(str(ctx.guild.id), False)
     await ctx.send("Автоподключение включено.")
 
 
@@ -503,6 +507,7 @@ async def autojoin_on_slash(interaction: discord.Interaction) -> None:
         return
 
     set_discord_autojoin(str(interaction.guild.id), True)
+    set_discord_autojoin_announce_sent(str(interaction.guild.id), False)
     await interaction.response.send_message("Автоподключение включено.")
 
 
@@ -685,15 +690,17 @@ async def on_voice_state_update(
             if voice_client is None or not voice_client.is_connected():
                 try:
                     await channel.connect()
-                    announce_channel = _pick_announcement_channel(channel.guild)
-                    if announce_channel:
-                        await announce_channel.send(
-                            f"Подключился к голосовому каналу «{channel.name}», "
-                            "т.к. кто-то в него зашёл.\n"
-                            "Чтобы я вышел, напишите /leave.\n"
-                            "Чтобы я не подключался автоматически, напишите /autojoin_off.\n"
-                            "Чтобы снова включить автоподключение, напишите /autojoin_on."
-                        )
+                    if not get_discord_autojoin_announce_sent(str(channel.guild.id)):
+                        announce_channel = _pick_announcement_channel(channel.guild)
+                        if announce_channel:
+                            await announce_channel.send(
+                                f"Подключился к голосовому каналу «{channel.name}», "
+                                "т.к. кто-то в него зашёл.\n"
+                                "Чтобы я вышел, напишите /leave.\n"
+                                "Чтобы я не подключался автоматически, напишите /autojoin_off.\n"
+                                "Чтобы снова включить автоподключение, напишите /autojoin_on."
+                            )
+                        set_discord_autojoin_announce_sent(str(channel.guild.id), True)
                 except Exception as exc:
                     logger.warning("Failed to auto-join voice channel: %s", exc)
 
