@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -13,11 +12,13 @@ from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from services.generation import check_model_availability, init_client, refresh_models_from_api
 from services.memory import (
+    get_all_admins,
+    get_discord_autojoin,
+    get_notification_flows_for_channel,
     get_voice_notification_chat_id,
     init_db,
-    upsert_discord_voice_channel,
-    get_discord_autojoin,
     set_discord_autojoin,
+    upsert_discord_voice_channel,
 )
 from utils.helpers import resolve_system_prompt
 from telegram import Bot
@@ -155,18 +156,44 @@ def _sync_discord_voice_channels() -> None:
             )
 
 
-async def _send_telegram_notification(text: str) -> None:
-    chat_id = get_voice_notification_chat_id()
-    if not chat_id:
-        return
+async def _send_telegram_notification(text: str, discord_channel_id: str | None = None) -> None:
     if not telegram_bot:
         logger.warning("Telegram bot token not configured, cannot send notifications.")
         return
 
-    try:
-        await telegram_bot.send_message(chat_id=int(chat_id), text=text)
-    except Exception as exc:
-        logger.warning("Failed to send Telegram notification: %s", exc)
+    sent_chat_ids: set[str] = set()
+
+    async def _send(chat_id: str) -> None:
+        if chat_id in sent_chat_ids:
+            return
+        sent_chat_ids.add(chat_id)
+        try:
+            await telegram_bot.send_message(chat_id=int(chat_id), text=text)
+        except Exception as exc:
+            logger.warning("Failed to send Telegram notification to chat %s: %s", chat_id, exc)
+
+    admins = get_all_admins()
+    if admins:
+        for admin in admins:
+            chat_id = admin.get("chat_id")
+            if not chat_id:
+                continue
+            await _send(str(chat_id))
+
+    flow_chat_ids: list[str] = []
+    if discord_channel_id:
+        flows = get_notification_flows_for_channel(discord_channel_id)
+        flow_chat_ids = [str(flow["telegram_chat_id"]) for flow in flows if flow.get("telegram_chat_id")]
+        for chat_id in flow_chat_ids:
+            await _send(chat_id)
+
+    chat_id = get_voice_notification_chat_id()
+    if not chat_id or flow_chat_ids:
+        if not admins and not flow_chat_ids and not chat_id:
+            logger.info("No admins or flow/voice notification chat configured.")
+        return
+
+    await _send(str(chat_id))
 
 
 async def _handle_dm_message(message: discord.Message, clean_content: str) -> None:
@@ -390,7 +417,7 @@ async def on_voice_state_update(
             f"🎧 {member.display_name} подключился к голосовому каналу "
             f"«{channel.name}» ({guild_name})."
         )
-        await _send_telegram_notification(notification)
+        await _send_telegram_notification(notification, discord_channel_id=str(channel.id))
 
         if channel.guild and get_discord_autojoin(str(channel.guild.id)):
             voice_client = channel.guild.voice_client

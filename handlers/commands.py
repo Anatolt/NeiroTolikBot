@@ -1,6 +1,7 @@
 import logging
 import time
 from io import BytesIO
+from typing import Optional
 from telegram import Update
 from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
@@ -10,11 +11,13 @@ from services.memory import (
     add_message,
     clear_memory,
     get_discord_voice_channels,
+    get_notification_flows,
     get_telegram_chats,
     get_all_admins,
     get_routing_mode,
     is_admin,
-    set_voice_notification_chat_id,
+    add_notification_flow,
+    remove_notification_flow,
     set_routing_mode,
     set_show_response_header,
     start_new_dialog,
@@ -42,7 +45,9 @@ MODELS_HINT_TEXT = (
 
 ADMIN_COMMANDS_TEXT = (
     "👑 Команды администратора:\n"
-    "• /setflow — выбрать чат для уведомлений о Discord\n"
+    "• /flow — показать текущие связи Discord → Telegram\n"
+    "• /setflow — настроить связь Discord → Telegram\n"
+    "• /unsetflow — отключить связь Discord → Telegram\n"
     "• /show_discord_chats — показать голосовые чаты Discord\n"
     "• /show_tg_chats — показать чаты Telegram, где есть бот\n"
     "• /admin_help — показать эту справку\n"
@@ -51,6 +56,65 @@ ADMIN_COMMANDS_TEXT = (
     "• покажи чаты дискорд\n"
     "• покажи чаты тг"
 )
+
+_ROMAN_NUMERALS = [
+    "i",
+    "ii",
+    "iii",
+    "iv",
+    "v",
+    "vi",
+    "vii",
+    "viii",
+    "ix",
+    "x",
+    "xi",
+    "xii",
+    "xiii",
+    "xiv",
+    "xv",
+    "xvi",
+    "xvii",
+    "xviii",
+    "xix",
+    "xx",
+]
+
+
+def _index_to_letter(index: int) -> str:
+    result = ""
+    value = index
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _letter_to_index(value: str) -> Optional[int]:
+    if not value or not value.isalpha():
+        return None
+    value = value.upper()
+    index = 0
+    for char in value:
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+
+def _index_to_roman(index: int) -> str:
+    if 1 <= index <= len(_ROMAN_NUMERALS):
+        return _ROMAN_NUMERALS[index - 1]
+    return str(index)
+
+
+def _roman_to_index(value: str) -> Optional[int]:
+    if not value:
+        return None
+    value = value.lower().strip()
+    if value in _ROMAN_NUMERALS:
+        return _ROMAN_NUMERALS.index(value) + 1
+    if value.isdigit():
+        return int(value)
+    return None
 
 
 def _is_admin_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -215,26 +279,142 @@ async def show_tg_chats_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def setflow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Настраивает чат Telegram для уведомлений о Discord."""
+    """Настраивает связь Discord-канала и Telegram-чата для уведомлений."""
     if not _is_admin_user(update, context):
         await update.message.reply_text("Доступ к админ-командам запрещён.")
         return
 
     args = context.args or []
-    if args:
-        chat_id = args[0]
-        set_voice_notification_chat_id(chat_id)
-        await update.message.reply_text(f"Готово! Уведомления будут отправляться в чат {chat_id}.")
+    discord_channels = get_discord_voice_channels()
+    telegram_chats = get_telegram_chats()
+
+    if len(args) >= 2:
+        discord_index = args[0]
+        telegram_index = args[1]
+
+        if not discord_index.isdigit():
+            await update.message.reply_text("Первый аргумент должен быть номером Discord-канала.")
+            return
+
+        discord_pos = int(discord_index)
+        telegram_pos = _letter_to_index(telegram_index)
+
+        if discord_pos < 1 or discord_pos > len(discord_channels):
+            await update.message.reply_text("Номер Discord-канала вне диапазона.")
+            return
+
+        if telegram_pos is None or telegram_pos < 1 or telegram_pos > len(telegram_chats):
+            await update.message.reply_text("Буква Telegram-чата вне диапазона.")
+            return
+
+        discord_channel = discord_channels[discord_pos - 1]
+        telegram_chat = telegram_chats[telegram_pos - 1]
+
+        add_notification_flow(
+            discord_channel_id=str(discord_channel["channel_id"]),
+            telegram_chat_id=str(telegram_chat["chat_id"]),
+        )
+        await update.message.reply_text(
+            f"Готово! Связал Discord «{discord_channel.get('channel_name')}» "
+            f"с Telegram «{telegram_chat.get('title') or telegram_chat.get('chat_id')}»."
+        )
         return
 
-    discord_info = _format_discord_voice_channels()
-    telegram_info = _format_telegram_chats()
-    instruction = (
-        "\n\nЧтобы выбрать чат для уведомлений, отправьте:\n"
-        "/setflow <chat_id>"
+    if not discord_channels or not telegram_chats:
+        discord_info = _format_discord_voice_channels()
+        telegram_info = _format_telegram_chats()
+        await update.message.reply_text(f"{discord_info}\n\n{telegram_info}")
+        return
+
+    discord_lines = ["🎧 Голосовые чаты Discord (по номерам):"]
+    for idx, channel in enumerate(discord_channels, start=1):
+        guild_name = channel.get("guild_name") or "Без сервера"
+        channel_name = channel.get("channel_name") or channel.get("channel_id")
+        discord_lines.append(f"{idx}) {guild_name} / {channel_name} — {channel.get('channel_id')}")
+
+    telegram_lines = ["💬 Чаты Telegram (по буквам):"]
+    for idx, chat in enumerate(telegram_chats, start=1):
+        letter = _index_to_letter(idx)
+        title = chat.get("title") or "Без названия"
+        chat_type = chat.get("chat_type") or "unknown"
+        telegram_lines.append(f"{letter}) {title} ({chat_type}) — {chat.get('chat_id')}")
+
+    instruction = "\n\nЧтобы связать, отправьте: /setflow <номер> <буква>\nПример: /setflow 2 C"
+
+    await update.message.reply_text(
+        "\n".join(discord_lines) + "\n\n" + "\n".join(telegram_lines) + instruction
     )
 
-    await update.message.reply_text(f"{discord_info}\n\n{telegram_info}{instruction}")
+
+async def flow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает текущие настройки flows Discord -> Telegram."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    flows = get_notification_flows()
+    if not flows:
+        await update.message.reply_text("Связки Discord → Telegram не настроены.")
+        return
+
+    discord_channels = {c["channel_id"]: c for c in get_discord_voice_channels()}
+    telegram_chats = {c["chat_id"]: c for c in get_telegram_chats()}
+
+    lines = ["🔁 Текущие связи Discord → Telegram:"]
+    for idx, flow in enumerate(flows, start=1):
+        roman = _index_to_roman(idx)
+        discord_info = discord_channels.get(flow["discord_channel_id"], {})
+        telegram_info = telegram_chats.get(flow["telegram_chat_id"], {})
+        discord_name = discord_info.get("channel_name") or flow["discord_channel_id"]
+        discord_guild = discord_info.get("guild_name") or "Без сервера"
+        telegram_title = telegram_info.get("title") or flow["telegram_chat_id"]
+        lines.append(
+            f"{roman}) {discord_guild} / {discord_name} → {telegram_title} ({flow['telegram_chat_id']})"
+        )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def unsetflow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет настройку flow по римской цифре."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    flows = get_notification_flows()
+    if not flows:
+        await update.message.reply_text("Связки Discord → Telegram не настроены.")
+        return
+
+    args = context.args or []
+    if not args:
+        lines = ["🧹 Выберите связь для удаления:"]
+        discord_channels = {c["channel_id"]: c for c in get_discord_voice_channels()}
+        telegram_chats = {c["chat_id"]: c for c in get_telegram_chats()}
+
+        for idx, flow in enumerate(flows, start=1):
+            roman = _index_to_roman(idx)
+            discord_info = discord_channels.get(flow["discord_channel_id"], {})
+            telegram_info = telegram_chats.get(flow["telegram_chat_id"], {})
+            discord_name = discord_info.get("channel_name") or flow["discord_channel_id"]
+            discord_guild = discord_info.get("guild_name") or "Без сервера"
+            telegram_title = telegram_info.get("title") or flow["telegram_chat_id"]
+            lines.append(
+                f"{roman}) {discord_guild} / {discord_name} → {telegram_title} ({flow['telegram_chat_id']})"
+            )
+
+        lines.append("\nЧтобы удалить, отправьте: /unsetflow <римская_цифра>")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    index = _roman_to_index(args[0])
+    if index is None or index < 1 or index > len(flows):
+        await update.message.reply_text("Некорректный номер связки. Используйте римскую цифру из списка.")
+        return
+
+    flow = flows[index - 1]
+    remove_notification_flow(int(flow["id"]))
+    await update.message.reply_text("Связка удалена.")
 
 
 def _format_routing_mode_label(mode: str) -> str:

@@ -81,6 +81,16 @@ def init_db():
     )
     ''')
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS notification_flows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discord_channel_id TEXT NOT NULL,
+        telegram_chat_id TEXT NOT NULL,
+        updated_at DATETIME NOT NULL,
+        UNIQUE(discord_channel_id, telegram_chat_id)
+    )
+    ''')
+
     # Таблица пользовательских настроек (например, выбор режима роутинга)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS user_settings (
@@ -376,6 +386,76 @@ def get_voice_notification_chat_id() -> Optional[str]:
     conn.close()
 
     return result[0] if result else None
+
+
+def add_notification_flow(discord_channel_id: str, telegram_chat_id: str) -> None:
+    """Добавляет связку Discord-канала и Telegram-чата для уведомлений."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_flows (discord_channel_id, telegram_chat_id, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(discord_channel_id, telegram_chat_id)
+        DO UPDATE SET updated_at=excluded.updated_at
+        """,
+        (discord_channel_id, telegram_chat_id, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_notification_flows() -> List[Dict[str, Any]]:
+    """Возвращает все настроенные уведомления Discord -> Telegram."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, discord_channel_id, telegram_chat_id, updated_at
+        FROM notification_flows
+        ORDER BY id
+        """
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_notification_flows_for_channel(discord_channel_id: str) -> List[Dict[str, Any]]:
+    """Возвращает уведомления для указанного Discord-канала."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, discord_channel_id, telegram_chat_id, updated_at
+        FROM notification_flows
+        WHERE discord_channel_id = ?
+        ORDER BY id
+        """,
+        (discord_channel_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def remove_notification_flow(flow_id: int) -> None:
+    """Удаляет связку уведомлений по идентификатору."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM notification_flows WHERE id = ?", (flow_id,))
+
+    conn.commit()
+    conn.close()
 
 
 def set_discord_autojoin(guild_id: str, enabled: bool) -> None:

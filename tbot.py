@@ -17,6 +17,8 @@ from handlers.commands import (
     models_paid_command,
     models_specialized_command,
     setflow_command,
+    flow_command,
+    unsetflow_command,
     show_discord_chats_command,
     show_tg_chats_command,
     selftest_command,
@@ -144,6 +146,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("routing_llm", routing_llm_command))
     application.add_handler(CommandHandler("routing_mode", routing_mode_command))
     application.add_handler(CommandHandler("setflow", setflow_command))
+    application.add_handler(CommandHandler("flow", flow_command))
+    application.add_handler(CommandHandler("unsetflow", unsetflow_command))
     application.add_handler(CommandHandler("show_discord_chats", show_discord_chats_command))
     application.add_handler(CommandHandler("show_tg_chats", show_tg_chats_command))
     
