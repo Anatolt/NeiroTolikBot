@@ -377,6 +377,44 @@ def get_voice_notification_chat_id() -> Optional[str]:
 
     return result[0] if result else None
 
+
+def set_discord_autojoin(guild_id: str, enabled: bool) -> None:
+    """Сохраняет настройку автоподключения для Discord-гильдии."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (f"discord_autojoin_{guild_id}", "1" if enabled else "0", datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_discord_autojoin(guild_id: str) -> bool:
+    """Возвращает настройку автоподключения для Discord-гильдии."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        (f"discord_autojoin_{guild_id}",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    if not result:
+        return True
+
+    value = result[0]
+    return str(value).strip() not in {"0", "false", "False", "no", "off"}
+
 def remove_admin(chat_id: str, user_id: str) -> None:
     """Удаление администратора из базы данных."""
     conn = sqlite3.connect(DB_PATH)

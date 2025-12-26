@@ -123,7 +123,7 @@ async def main() -> None:
     )
 
     # Регистрация обработчиков команд
-    application.add_handler(MessageHandler(filters.ALL, track_chat), group=0)
+    application.add_handler(MessageHandler(filters.ALL, track_chat), group=-1)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("new", new_dialog))
     application.add_handler(CommandHandler("clear", clear_memory_command))
