@@ -165,7 +165,10 @@ async def _send_responses(message: discord.Message, clean_content: str) -> None:
         username=str(message.author),
     )
 
-    responses = await process_message_request(request)
+    async def _ack() -> None:
+        await message.channel.send("✅ Принял запрос, думаю...")
+
+    responses = await process_message_request(request, ack_callback=_ack)
 
     for response in responses:
         if response.photo_url:

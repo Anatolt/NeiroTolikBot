@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import Awaitable, Callable, List, Optional
 
 from config import BOT_CONFIG
 from handlers.commands import MODELS_HINT_TEXT
@@ -234,7 +234,10 @@ async def send_models_by_request(
     return [MessageResponse(text=part) for part in parts]
 
 
-async def process_message_request(request: MessageProcessingRequest) -> List[MessageResponse]:
+async def process_message_request(
+    request: MessageProcessingRequest,
+    ack_callback: Optional[Callable[[], Awaitable[None]]] = None,
+) -> List[MessageResponse]:
     """Общая бизнес-логика обработки входящих сообщений для любых платформ."""
 
     responses: List[MessageResponse] = []
@@ -366,8 +369,11 @@ async def process_message_request(request: MessageProcessingRequest) -> List[Mes
             )
         )
 
-    if request_type in {"text", "search", "search_previous", "consilium"}:
-        responses.append(MessageResponse(text="✅ Принял запрос, думаю..."))
+    if request_type in {"text", "search", "search_previous", "consilium"} and ack_callback:
+        try:
+            await ack_callback()
+        except Exception as exc:
+            logger.warning("Failed to send ack message: %s", exc)
 
     if request_type == "help":
         capabilities = await get_capabilities()

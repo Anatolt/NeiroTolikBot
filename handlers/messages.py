@@ -139,7 +139,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         username=message.from_user.username if message.from_user else None,
     )
 
-    responses = await process_message_request(request)
+    async def _ack() -> None:
+        await message.reply_text("✅ Принял запрос, думаю...")
+
+    responses = await process_message_request(request, ack_callback=_ack)
 
     for response in responses:
         if response.photo_url:
