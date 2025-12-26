@@ -34,6 +34,7 @@ from handlers.commands import (
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
+from handlers.voice_messages import handle_voice_message
 from services.generation import (
     init_client,
     check_model_availability,
@@ -52,6 +53,7 @@ BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_CONFIG["DISCORD_BOT_TOKEN"] = os.getenv("DISCORD_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
+BOT_CONFIG["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -153,6 +155,8 @@ async def main() -> None:
     
     # Обработчик текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Обработчик голосовых сообщений
+    application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
 
     logger.info("Starting bot polling...")
     

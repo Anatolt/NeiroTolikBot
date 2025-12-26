@@ -5,6 +5,7 @@ BOT_CONFIG = {
     "DISCORD_BOT_TOKEN": None,  # Will be loaded from .env
     "OPENROUTER_API_KEY": None,  # Will be loaded from .env
     "PIAPI_KEY": None,  # Will be loaded from .env
+    "OPENAI_API_KEY": None,  # Will be loaded from .env
     
     # Bot Settings
     "BOT_TITLE": "NeiroTolikBot",

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
+from services.speech_to_text import transcribe_audio
 from services.generation import check_model_availability, init_client, refresh_models_from_api
 from services.memory import (
     create_discord_join_request,
@@ -35,6 +37,7 @@ BOT_CONFIG["DISCORD_BOT_TOKEN"] = os.getenv("DISCORD_BOT_TOKEN")
 BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
+BOT_CONFIG["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -60,6 +63,8 @@ bot = commands.Bot(
 )
 telegram_bot = Bot(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]) if BOT_CONFIG.get("TELEGRAM_BOT_TOKEN") else None
 _join_request_task: asyncio.Task | None = None
+_voice_disconnect_tasks: dict[int, asyncio.Task] = {}
+_VOICE_DISCONNECT_DELAY_SECONDS = 15
 
 # Инициализация клиентов и БД
 init_client()
@@ -311,6 +316,25 @@ async def _process_join_requests_loop() -> None:
                 logger.warning("Failed to process join request: %s", exc)
 
         await asyncio.sleep(3)
+
+
+async def _disconnect_if_empty(guild_id: int) -> None:
+    await asyncio.sleep(_VOICE_DISCONNECT_DELAY_SECONDS)
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return
+    voice_client = guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        return
+    channel = voice_client.channel
+    if not channel:
+        return
+    humans = [m for m in channel.members if not m.bot]
+    if not humans:
+        try:
+            await voice_client.disconnect()
+        except Exception as exc:
+            logger.warning("Failed to auto-leave voice channel: %s", exc)
 
 
 @bot.event
@@ -586,6 +610,41 @@ async def on_message(message: discord.Message) -> None:
             await _send_telegram_join_request(request_id, guild_name, str(message.author))
             return
 
+    if message.attachments:
+        audio_attachment = None
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("audio/"):
+                audio_attachment = attachment
+                break
+            if attachment.filename.lower().endswith((".ogg", ".mp3", ".wav", ".m4a")):
+                audio_attachment = attachment
+                break
+
+        if audio_attachment:
+            tmp_path = None
+            try:
+                suffix = ""
+                if audio_attachment.filename and "." in audio_attachment.filename:
+                    suffix = "." + audio_attachment.filename.rsplit(".", 1)[-1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".ogg") as tmp_file:
+                    tmp_path = tmp_file.name
+                await audio_attachment.save(tmp_path)
+                transcript, error = await transcribe_audio(tmp_path)
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        logger.warning("Failed to remove temp file %s", tmp_path)
+
+            if transcript:
+                await _send_responses(message, transcript)
+            else:
+                await message.channel.send("Не удалось распознать голосовое сообщение.")
+                if error:
+                    logger.warning("Discord audio STT error: %s", error)
+            return
+
     ctx = await bot.get_context(message)
     if ctx.valid:
         await bot.process_commands(message)
@@ -637,6 +696,20 @@ async def on_voice_state_update(
                         )
                 except Exception as exc:
                     logger.warning("Failed to auto-join voice channel: %s", exc)
+
+    voice_client = member.guild.voice_client
+    guild_id = member.guild.id
+    if voice_client and voice_client.is_connected():
+        channel = voice_client.channel
+        if channel:
+            humans = [m for m in channel.members if not m.bot]
+            existing_task = _voice_disconnect_tasks.pop(guild_id, None)
+            if existing_task and not existing_task.done():
+                existing_task.cancel()
+            if not humans:
+                _voice_disconnect_tasks[guild_id] = asyncio.create_task(
+                    _disconnect_if_empty(guild_id)
+                )
 
 
 async def main() -> None:
