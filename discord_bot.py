@@ -21,11 +21,13 @@ from services.memory import (
     get_discord_autojoin_announce_sent,
     get_notification_flows_for_channel,
     get_unprocessed_discord_join_requests,
+    get_voice_auto_reply,
     get_voice_notification_chat_id,
     init_db,
     mark_discord_join_request_processed,
     set_discord_autojoin,
     set_discord_autojoin_announce_sent,
+    set_voice_auto_reply,
     upsert_discord_voice_channel,
 )
 from utils.helpers import resolve_system_prompt
@@ -67,6 +69,7 @@ telegram_bot = Bot(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]) if BOT_CONFIG.get("TELEGRAM
 _join_request_task: asyncio.Task | None = None
 _voice_disconnect_tasks: dict[int, asyncio.Task] = {}
 _VOICE_DISCONNECT_DELAY_SECONDS = 15
+_pending_voice_transcripts: dict[tuple[str, str], str] = {}
 
 # Инициализация клиентов и БД
 init_client()
@@ -175,6 +178,29 @@ async def _send_responses(message: discord.Message, clean_content: str) -> None:
             await message.channel.send(response.photo_url)
         elif response.text:
             await message.channel.send(response.text)
+
+
+async def _handle_voice_confirmation(message: discord.Message) -> bool:
+    content = (message.content or "").strip().lower()
+    if content.startswith("/"):
+        content = content[1:]
+
+    if content not in {"yes", "y", "да", "ага", "fuf"}:
+        return False
+
+    key = (str(message.channel.id), str(message.author.id))
+    transcript = _pending_voice_transcripts.pop(key, None)
+    if not transcript:
+        await message.channel.send("Нет ожидающей голосовухи для ответа.")
+        return True
+
+    await _send_responses(message, transcript)
+    if not get_voice_auto_reply(str(message.channel.id), str(message.author.id)):
+        await message.channel.send(
+            "Можно перейти в режим диалога, чтобы я не переспрашивал отвечать ли на голосовухи: "
+            "/voice_msg_conversation_on"
+        )
+    return True
 
 
 def _sync_discord_voice_channels() -> None:
@@ -525,6 +551,42 @@ async def autojoin_off_command(ctx: commands.Context) -> None:
     await ctx.send("Автоподключение отключено.")
 
 
+@bot.command(name="voice_msg_conversation_on")
+async def voice_msg_conversation_on_command(ctx: commands.Context) -> None:
+    set_voice_auto_reply(str(ctx.channel.id), str(ctx.author.id), True)
+    await ctx.send(
+        "🔊 Автоответ на голосовые сообщения включён.\n"
+        "Отключить: /voice_msg_conversation_off"
+    )
+
+
+@bot.command(name="voice_msg_conversation_off")
+async def voice_msg_conversation_off_command(ctx: commands.Context) -> None:
+    set_voice_auto_reply(str(ctx.channel.id), str(ctx.author.id), False)
+    await ctx.send(
+        "🔇 Автоответ на голосовые сообщения отключён.\n"
+        "Включить: /voice_msg_conversation_on"
+    )
+
+
+@bot.tree.command(name="voice_msg_conversation_on", description="Включить автоответ на голосовые сообщения")
+async def voice_msg_conversation_on_slash(interaction: discord.Interaction) -> None:
+    set_voice_auto_reply(str(interaction.channel.id), str(interaction.user.id), True)
+    await interaction.response.send_message(
+        "🔊 Автоответ на голосовые сообщения включён.\n"
+        "Отключить: /voice_msg_conversation_off"
+    )
+
+
+@bot.tree.command(name="voice_msg_conversation_off", description="Отключить автоответ на голосовые сообщения")
+async def voice_msg_conversation_off_slash(interaction: discord.Interaction) -> None:
+    set_voice_auto_reply(str(interaction.channel.id), str(interaction.user.id), False)
+    await interaction.response.send_message(
+        "🔇 Автоответ на голосовые сообщения отключён.\n"
+        "Включить: /voice_msg_conversation_on"
+    )
+
+
 @bot.tree.command(name="autojoin_off", description="Отключить автоподключение к голосу")
 async def autojoin_off_slash(interaction: discord.Interaction) -> None:
     if not interaction.guild:
@@ -618,6 +680,9 @@ async def on_message(message: discord.Message) -> None:
             await _send_telegram_join_request(request_id, guild_name, str(message.author))
             return
 
+    if await _handle_voice_confirmation(message):
+        return
+
     if message.attachments:
         audio_attachment = None
         for attachment in message.attachments:
@@ -629,6 +694,8 @@ async def on_message(message: discord.Message) -> None:
                 break
 
         if audio_attachment:
+            await message.channel.send("Распознаю голосовое сообщение...")
+
             tmp_path = None
             try:
                 suffix = ""
@@ -646,7 +713,14 @@ async def on_message(message: discord.Message) -> None:
                         logger.warning("Failed to remove temp file %s", tmp_path)
 
             if transcript:
-                await _send_responses(message, transcript)
+                await message.channel.send(f"Текст голосового:\n{transcript}")
+
+                if get_voice_auto_reply(str(message.channel.id), str(message.author.id)):
+                    await _send_responses(message, transcript)
+                    return
+
+                _pending_voice_transcripts[(str(message.channel.id), str(message.author.id))] = transcript
+                await message.channel.send("Нужен ответ? /yes")
             else:
                 await message.channel.send("Не удалось распознать голосовое сообщение.")
                 if error:

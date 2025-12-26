@@ -115,6 +115,7 @@ def init_db():
         routing_mode TEXT,
         show_response_header BOOLEAN DEFAULT 1,
         preferred_model TEXT,
+        voice_auto_reply BOOLEAN DEFAULT 0,
         updated_at DATETIME NOT NULL,
         UNIQUE(chat_id, user_id)
     )
@@ -127,6 +128,8 @@ def init_db():
         cursor.execute("ALTER TABLE user_settings ADD COLUMN show_response_header BOOLEAN DEFAULT 1")
     if "preferred_model" not in existing_columns:
         cursor.execute("ALTER TABLE user_settings ADD COLUMN preferred_model TEXT")
+    if "voice_auto_reply" not in existing_columns:
+        cursor.execute("ALTER TABLE user_settings ADD COLUMN voice_auto_reply BOOLEAN DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -807,6 +810,44 @@ def get_show_response_header(chat_id: str, user_id: str) -> bool:
 
     value = result[0]
     return bool(value) if value is not None else True
+
+
+def set_voice_auto_reply(chat_id: str, user_id: str, enabled: bool) -> None:
+    """Сохраняет выбор автоответа на голосовые сообщения."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO user_settings (chat_id, user_id, voice_auto_reply, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(chat_id, user_id)
+        DO UPDATE SET voice_auto_reply=excluded.voice_auto_reply, updated_at=excluded.updated_at
+        """,
+        (chat_id, user_id, int(enabled), datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_voice_auto_reply(chat_id: str, user_id: str) -> bool:
+    """Возвращает флаг автоответа на голосовые сообщения (по умолчанию выключен)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT voice_auto_reply FROM user_settings WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    if result is None:
+        return False
+
+    value = result[0]
+    return bool(value) if value is not None else False
 
 # Инициализация базы данных при импорте модуля
 init_db()

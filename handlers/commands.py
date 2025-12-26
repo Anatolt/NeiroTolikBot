@@ -21,6 +21,7 @@ from services.memory import (
     set_routing_mode,
     set_show_response_header,
     start_new_dialog,
+    set_voice_auto_reply,
 )
 from services.generation import CATEGORY_TITLES, build_models_messages
 from services.consilium import (
@@ -450,6 +451,30 @@ async def routing_mode_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     current_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
     await update.message.reply_text(f"🔎 Текущий режим роутинга: {_format_routing_mode_label(current_mode)}.")
+
+
+async def voice_msg_conversation_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает автоответ на голосовые сообщения."""
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+
+    set_voice_auto_reply(chat_id, user_id, True)
+    await update.message.reply_text(
+        "🔊 Автоответ на голосовые сообщения включён.\n"
+        "Отключить: /voice_msg_conversation_off"
+    )
+
+
+async def voice_msg_conversation_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отключает автоответ на голосовые сообщения."""
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+
+    set_voice_auto_reply(chat_id, user_id, False)
+    await update.message.reply_text(
+        "🔇 Автоответ на голосовые сообщения отключён.\n"
+        "Включить: /voice_msg_conversation_on"
+    )
 
 
 async def header_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -31,10 +31,12 @@ from handlers.commands import (
     routing_llm_command,
     routing_mode_command,
     routing_rules_command,
+    voice_msg_conversation_off_command,
+    voice_msg_conversation_on_command,
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
-from handlers.voice_messages import handle_voice_message
+from handlers.voice_messages import handle_voice_message, voice_confirmation_command
 from services.generation import (
     init_client,
     check_model_availability,
@@ -147,6 +149,10 @@ async def main() -> None:
     application.add_handler(CommandHandler("routing_rules", routing_rules_command))
     application.add_handler(CommandHandler("routing_llm", routing_llm_command))
     application.add_handler(CommandHandler("routing_mode", routing_mode_command))
+    application.add_handler(CommandHandler("voice_msg_conversation_on", voice_msg_conversation_on_command))
+    application.add_handler(CommandHandler("voice_msg_conversation_off", voice_msg_conversation_off_command))
+    application.add_handler(CommandHandler("yes", voice_confirmation_command))
+    application.add_handler(CommandHandler("y", voice_confirmation_command))
     application.add_handler(CommandHandler("setflow", setflow_command))
     application.add_handler(CommandHandler("flow", flow_command))
     application.add_handler(CommandHandler("unsetflow", unsetflow_command))
