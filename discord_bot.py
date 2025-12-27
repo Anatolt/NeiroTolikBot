@@ -192,8 +192,7 @@ async def _handle_voice_confirmation(message: discord.Message) -> bool:
     key = (str(message.channel.id), str(message.author.id))
     transcript = _pending_voice_transcripts.pop(key, None)
     if not transcript:
-        await message.channel.send("Нет ожидающей голосовухи для ответа.")
-        return True
+        return False
 
     await _send_responses(message, transcript)
     if not get_voice_auto_reply(str(message.channel.id), str(message.author.id)):

@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from handlers.commands import show_discord_chats_command, show_tg_chats_command
-from handlers.voice_messages import YES_VARIANTS, handle_voice_confirmation
+from handlers.voice_messages import handle_voice_confirmation
 from services.memory import (
     add_admin,
     get_latest_pending_discord_join_request,
@@ -55,11 +55,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             await show_tg_chats_command(update, context)
         return
-
-    if normalized_text in YES_VARIANTS or normalized_text in {f"/{item}" for item in YES_VARIANTS}:
-        handled = await handle_voice_confirmation(update, context)
-        if handled:
-            return
 
     if (
         chat_type == ChatType.PRIVATE

@@ -17,7 +17,7 @@ from services.speech_to_text import transcribe_audio
 
 logger = logging.getLogger(__name__)
 
-YES_VARIANTS = {"yes", "y", "да", "ага", "fuf"}
+YES_VARIANTS = {"yes", "y"}
 PENDING_LLM_ROUTER_KEY = "pending_llm_routes"
 
 
@@ -72,8 +72,7 @@ async def handle_voice_confirmation(update: Update, context: ContextTypes.DEFAUL
     context.user_data["pending_voice_transcripts"] = pending
 
     if not transcript:
-        await message.reply_text("Нет ожидающей голосовухи для ответа.")
-        return True
+        return False
 
     await _process_voice_transcript(update, context, transcript)
     return True
