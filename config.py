@@ -6,6 +6,7 @@ BOT_CONFIG = {
     "OPENROUTER_API_KEY": None,  # Will be loaded from .env
     "PIAPI_KEY": None,  # Will be loaded from .env
     "OPENAI_API_KEY": None,  # Will be loaded from .env
+    "IMAGE_ROUTER_KEY": None,  # Will be loaded from .env
     
     # Bot Settings
     "BOT_TITLE": "NeiroTolikBot",
@@ -27,6 +28,16 @@ BOT_CONFIG = {
         "MAX_ATTEMPTS": 60,
         "POLLING_INTERVAL": 2
     },
+    "PIAPI_IMAGE_MODELS": [
+        "Qubico/flux1-schnell",
+    ],
+    "IMAGE_ROUTER_BASE_URL": "https://api.imagerouter.io/v1/openai/images/generations",
+    "IMAGE_ROUTER_MODELS_URL": "https://api.imagerouter.io/v1/models",
+    "IMAGE_ROUTER_MODELS": [
+        "gpt-4o-image",
+        "gemini-2.5-flash-image",
+        "nano-banana-pro",
+    ],
     "IMAGE_MODELS": [
         "Qubico/flux1-schnell",
         "gpt-4o-image",

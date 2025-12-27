@@ -27,7 +27,13 @@ from services.memory import (
     set_voice_model,
     set_preferred_model,
 )
-from services.generation import CATEGORY_TITLES, build_models_messages, categorize_models, fetch_models_data
+from services.generation import (
+    CATEGORY_TITLES,
+    build_models_messages,
+    categorize_models,
+    fetch_models_data,
+    fetch_imagerouter_models,
+)
 from services.consilium import (
     parse_models_from_message,
     select_default_consilium_models,
@@ -53,16 +59,83 @@ MODELS_HINT_TEXT = (
 _MODELS_FREE_PAGE_SIZE = 15
 _MODELS_FREE_CALLBACK_PREFIX = "models_free:page:"
 
-def _build_image_models_text() -> str:
+def _build_image_models_text(
+    piapi_models: list[str],
+    imagerouter_models: list[str],
+    combined_models: list[str],
+) -> str:
     model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
-    image_models = BOT_CONFIG.get("IMAGE_MODELS", [])
     lines = ["🖼️ Модели генерации изображений:"]
     if model:
         lines.append(f"Текущая: {model}")
-    if image_models:
-        for idx, item in enumerate(image_models, start=1):
-            lines.append(f"{idx}) {item} — `/set_pic_model {idx}`")
+    if not combined_models:
+        lines.append("Список моделей генерации изображений пуст.")
+        return "\n".join(lines)
+
+    index = 1
+    seen: set[str] = set()
+
+    def _append_section(title: str, models: list[str], index: int) -> int:
+        added = False
+        for item in models:
+            if item in seen:
+                continue
+            if not added:
+                lines.append(title)
+                added = True
+            seen.add(item)
+            lines.append(f"{index}) {item} — `/set_pic_model {index}`")
+            index += 1
+        return index
+
+    index = _append_section("PiAPI:", piapi_models, index)
+    _append_section("ImageRouter:", imagerouter_models, index)
     return "\n".join(lines)
+
+
+async def _reply_text_in_parts(
+    update: Update, text: str, parse_mode: str | None = None, max_length: int = 4000
+) -> None:
+    if len(text) <= max_length:
+        await update.message.reply_text(text, parse_mode=parse_mode)
+        return
+
+    parts: list[str] = []
+    current_part = ""
+    for line in text.split("\n"):
+        if len(current_part) + len(line) + 1 > max_length:
+            if current_part:
+                parts.append(current_part)
+            current_part = line + "\n"
+        else:
+            current_part += line + "\n"
+
+    if current_part:
+        parts.append(current_part)
+
+    for idx, part in enumerate(parts):
+        if idx == 0:
+            await update.message.reply_text(part, parse_mode=parse_mode)
+        else:
+            await update.message.reply_text(
+                f"*(продолжение {idx + 1}/{len(parts)})*\n\n{part}",
+                parse_mode="Markdown",
+            )
+
+
+async def _refresh_image_models() -> tuple[list[str], list[str], list[str]]:
+    piapi_models = BOT_CONFIG.get("PIAPI_IMAGE_MODELS", []) or []
+    imagerouter_models = await fetch_imagerouter_models()
+    combined_models: list[str] = []
+    seen: set[str] = set()
+    for model in piapi_models + imagerouter_models:
+        if model and model not in seen:
+            seen.add(model)
+            combined_models.append(model)
+
+    BOT_CONFIG["IMAGE_MODELS"] = combined_models
+    BOT_CONFIG["IMAGE_ROUTER_MODELS"] = imagerouter_models
+    return piapi_models, imagerouter_models, combined_models
 
 
 def _build_voice_models_text() -> str:
@@ -671,7 +744,12 @@ async def models_voice_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def models_pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает модели генерации изображений."""
-    await update.message.reply_text(_build_image_models_text(), parse_mode="Markdown")
+    piapi_models, imagerouter_models, combined_models = await _refresh_image_models()
+    await _reply_text_in_parts(
+        update,
+        _build_image_models_text(piapi_models, imagerouter_models, combined_models),
+        parse_mode="Markdown",
+    )
 
 
 async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -722,7 +800,7 @@ async def set_text_model_command(update: Update, context: ContextTypes.DEFAULT_T
 
 async def set_pic_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Меняет модель генерации изображений."""
-    image_models = BOT_CONFIG.get("IMAGE_MODELS", [])
+    _piapi_models, _imagerouter_models, image_models = await _refresh_image_models()
     if not image_models:
         await update.message.reply_text("Список моделей генерации изображений пуст.")
         return

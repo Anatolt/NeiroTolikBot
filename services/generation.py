@@ -67,6 +67,42 @@ def init_client():
         logger.info("OpenRouter client initialized successfully")
     return client
 
+
+async def fetch_imagerouter_models() -> list[str]:
+    """Получает список моделей для генерации изображений из ImageRouter."""
+    url = BOT_CONFIG.get("IMAGE_ROUTER_MODELS_URL") or "https://api.imagerouter.io/v1/models"
+    fallback = BOT_CONFIG.get("IMAGE_ROUTER_MODELS", []) or []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(
+                        f"ImageRouter models list error: {error_text} (Status: {response.status})"
+                    )
+                    return list(fallback)
+
+                data = await response.json()
+                if not isinstance(data, dict):
+                    logger.error(f"Unexpected ImageRouter models response format: {data}")
+                    return list(fallback)
+
+                models: list[str] = []
+                for model_id, details in data.items():
+                    if not model_id:
+                        continue
+                    if isinstance(details, dict):
+                        outputs = details.get("output")
+                        if outputs and "image" not in outputs:
+                            continue
+                    models.append(model_id)
+
+                models = sorted(set(models))
+                return models
+    except Exception as e:
+        logger.error(f"Error fetching ImageRouter models: {str(e)}")
+        return list(fallback)
+
 async def check_model_availability(model: str) -> bool:
     """Проверка доступности модели в OpenRouter API."""
     try:
@@ -861,11 +897,59 @@ async def generate_text(
     failed_model = model or BOT_CONFIG.get("DEFAULT_MODEL") or "unknown"
     return fallback_message, failed_model, guard_info
 
-async def generate_image(prompt: str) -> str:
-    """Генерация изображения с помощью PiAPI.ai."""
-    if not BOT_CONFIG["PIAPI_KEY"]:
+def _get_image_router_models() -> set[str]:
+    models = BOT_CONFIG.get("IMAGE_ROUTER_MODELS", []) or []
+    return {model.lower() for model in models if isinstance(model, str)}
+
+
+async def _generate_image_imagerouter(prompt: str, model: str) -> str | None:
+    if not BOT_CONFIG.get("IMAGE_ROUTER_KEY"):
+        logger.error("IMAGE_ROUTER_KEY environment variable is not set.")
+        return None
+
+    url = BOT_CONFIG.get("IMAGE_ROUTER_BASE_URL") or "https://api.imagerouter.io/v1/openai/images/generations"
+    headers = {
+        "Authorization": f"Bearer {BOT_CONFIG['IMAGE_ROUTER_KEY']}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "prompt": prompt,
+        "model": model,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            logger.info(f"Sending image generation request to ImageRouter for prompt: {prompt}")
+            async with session.post(url, headers=headers, json=payload) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(
+                        f"ImageRouter Error Response: {error_text} (Status: {response.status})"
+                    )
+                    raise Exception(f"Failed to start ImageRouter image generation: {error_text}")
+
+                response_data = await response.json()
+                data_list = response_data.get("data") if isinstance(response_data, dict) else None
+                if not isinstance(data_list, list) or not data_list:
+                    logger.error(f"No image data received from ImageRouter: {response_data}")
+                    raise Exception("No image data received from ImageRouter")
+
+                image_url = data_list[0].get("url") if isinstance(data_list[0], dict) else None
+                if image_url:
+                    logger.info(f"ImageRouter image generation successful: {image_url}")
+                    return image_url
+
+                logger.error(f"No image URL in ImageRouter response: {response_data}")
+                raise Exception("No image URL in ImageRouter response")
+    except Exception as e:
+        logger.error(f"Error generating image with ImageRouter: {str(e)}", exc_info=True)
+        return None
+
+
+async def _generate_image_piapi(prompt: str, model: str) -> str | None:
+    if not BOT_CONFIG.get("PIAPI_KEY"):
         logger.error("PIAPI_KEY environment variable is not set.")
-        return "Ошибка конфигурации: Ключ API для генерации изображений не найден."
+        return None
 
     try:
         url = "https://api.piapi.ai/api/v1/task"
@@ -875,7 +959,7 @@ async def generate_image(prompt: str) -> str:
         }
 
         payload = {
-            "model": BOT_CONFIG["IMAGE_GENERATION"]["MODEL"],
+            "model": model,
             "task_type": BOT_CONFIG["IMAGE_GENERATION"]["TASK_TYPE"],
             "input": {
                 "prompt": prompt,
@@ -914,7 +998,9 @@ async def generate_image(prompt: str) -> str:
                 async with session.get(status_check_url, headers=headers) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        logger.error(f"Status check failed for task {task_id}: {error_text} (Status: {response.status})")
+                        logger.error(
+                            f"Status check failed for task {task_id}: {error_text} (Status: {response.status})"
+                        )
                         attempts += 1
                         continue
 
@@ -948,4 +1034,17 @@ async def generate_image(prompt: str) -> str:
 
     except Exception as e:
         logger.error(f"Error generating image with PiAPI.ai: {str(e)}", exc_info=True)
-        return f"Произошла ошибка при генерации изображения через PiAPI.ai: {str(e)}" 
+        return None
+
+
+async def generate_image(prompt: str) -> str | None:
+    """Генерация изображения через PiAPI.ai или ImageRouter."""
+    model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+    if not model:
+        logger.error("Image generation model is not configured.")
+        return None
+
+    if model.lower() in _get_image_router_models():
+        return await _generate_image_imagerouter(prompt, model)
+
+    return await _generate_image_piapi(prompt, model)
