@@ -332,6 +332,7 @@ async def execute_routed_request(
             )
     elif request_type == "image":
         responses.append(MessageResponse(text="Генерирую изображение..."))
+        responses.append(MessageResponse(text=f"Промпт: {content}"))
         image_url = await generate_image(content)
         if image_url:
             responses.append(MessageResponse(photo_url=image_url))
@@ -647,7 +648,7 @@ async def process_message_request(
             MessageResponse(
                 text=(
                     f"🔀 Включён {mode_label} роутинг для ваших сообщений в этом чате.\n"
-                    f"Чтобы переключиться, отправьте 'роутинг алгоритмами' или 'роутинг ллм', либо используйте слеш-команды /routing_rules и /routing_llm."
+                    f"Чтобы переключиться, отправьте 'роутинг алгоритмами' или 'роутинг ллм', либо используйте слеш-команды /rout_algo и /rout_llm."
                 )
             )
         )

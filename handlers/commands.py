@@ -394,8 +394,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"🤖 /models - Подсказка по спискам моделей\n"
         f"   /models_free, /models_paid, /models_large_context, /models_specialized\n"
         f"   /models_all — полный список моделей\n"
-        f"🔀 /routing_rules или /routing_llm — выбрать алгоритмический или LLM роутинг\n"
-        f"   /routing_mode — показать текущий режим\n"
+        f"🔀 /rout_algo или /rout_llm — выбрать алгоритмический или LLM роутинг\n"
+        f"   /rout — показать текущий режим\n"
         f"🛠 /header_on или /header_off — показать или спрятать техшапку над ответом\n"
         f"🏥 /consilium - Получить ответы от нескольких моделей одновременно\n\n"
         f"Также вы можете:\n"
@@ -586,7 +586,7 @@ async def routing_rules_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     set_routing_mode(chat_id, user_id, "rules")
     await update.message.reply_text(
-        "🔀 Включён алгоритмический роутинг. Чтобы вернуться к LLM, используйте /routing_llm или напишите 'роутинг ллм'."
+        "🔀 Включён алгоритмический роутинг. Чтобы вернуться к LLM, используйте /rout_llm или напишите 'роутинг ллм'."
     )
 
 
@@ -597,7 +597,7 @@ async def routing_llm_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     set_routing_mode(chat_id, user_id, "llm")
     await update.message.reply_text(
-        "🔀 Включён LLM роутинг. Чтобы вернуться к алгоритмам, используйте /routing_rules или напишите 'роутинг алгоритмами'."
+        "🔀 Включён LLM роутинг. Чтобы вернуться к алгоритмам, используйте /rout_algo или напишите 'роутинг алгоритмами'."
     )
 
 
@@ -607,7 +607,11 @@ async def routing_mode_command(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = str(update.effective_user.id)
 
     current_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
-    await update.message.reply_text(f"🔎 Текущий режим роутинга: {_format_routing_mode_label(current_mode)}.")
+    await update.message.reply_text(
+        "🔎 Текущий режим роутинга: "
+        f"{_format_routing_mode_label(current_mode)}.\n"
+        "Переключение: /rout_algo (алгоритмы), /rout_llm (LLM)."
+    )
 
 
 async def voice_msg_conversation_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -320,7 +320,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     routing_rules_ok = bool(routing_rules_message.replies) and "алгоритмический" in routing_rules_message.replies[0]
     results.append(
         (
-            "Команда /routing_rules",
+            "Команда /rout_algo",
             routing_rules_ok,
             routing_rules_message.replies[0] if routing_rules_message.replies else "Нет ответа",
         )
@@ -332,7 +332,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     routing_llm_ok = bool(routing_llm_message.replies) and "LLM" in routing_llm_message.replies[0]
     results.append(
         (
-            "Команда /routing_llm",
+            "Команда /rout_llm",
             routing_llm_ok,
             routing_llm_message.replies[0] if routing_llm_message.replies else "Нет ответа",
         )
@@ -346,7 +346,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     routing_mode_ok = bool(routing_mode_message.replies) and "роутинга" in routing_mode_message.replies[0]
     results.append(
         (
-            "Команда /routing_mode",
+            "Команда /rout",
             routing_mode_ok,
             routing_mode_message.replies[0] if routing_mode_message.replies else "Нет ответа",
         )
