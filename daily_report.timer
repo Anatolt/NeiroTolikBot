@@ -1,0 +1,9 @@
+[Unit]
+Description=Run NeiroTolikBot daily analytics report
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

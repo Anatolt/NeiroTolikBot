@@ -1,4 +1,8 @@
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from typing import Optional, Tuple
 
 from openai import AsyncOpenAI
@@ -10,6 +14,65 @@ logger = logging.getLogger(__name__)
 
 
 _client: Optional[AsyncOpenAI] = None
+
+
+def trim_silence(file_path: str) -> Tuple[str, bool]:
+    """Пытается вырезать тишину через ffmpeg; возвращает путь и признак обрезки."""
+    if not shutil.which("ffmpeg"):
+        return file_path, False
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
+            trimmed_path = tmp_file.name
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            file_path,
+            "-af",
+            "silenceremove=stop_periods=1:stop_duration=0.4:stop_threshold=-35dB",
+            "-c:a",
+            "libopus",
+            trimmed_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            logger.warning("ffmpeg silence trim failed: %s", result.stderr.strip())
+            try:
+                os.unlink(trimmed_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", trimmed_path)
+            return file_path, False
+
+        return trimmed_path, True
+    except Exception as exc:
+        logger.warning("Failed to trim silence: %s", exc)
+        return file_path, False
+
+
+def estimate_transcription_cost(
+    duration_seconds: float | None, size_bytes: int | None
+) -> Optional[float]:
+    """Грубая оценка стоимости транскрибации по длительности или размеру."""
+    cost_per_min = BOT_CONFIG.get("VOICE_TRANSCRIBE_COST_PER_MIN")
+    if cost_per_min is None:
+        return None
+
+    minutes = None
+    if duration_seconds and duration_seconds > 0:
+        minutes = duration_seconds / 60.0
+    elif size_bytes and size_bytes > 0:
+        size_mb = size_bytes / (1024 * 1024)
+        minutes = size_mb  # оценка: ~1MB на минуту
+
+    if minutes is None:
+        return None
+
+    try:
+        return float(cost_per_min) * minutes
+    except (TypeError, ValueError):
+        return None
 
 
 def _get_client() -> Optional[AsyncOpenAI]:

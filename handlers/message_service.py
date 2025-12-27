@@ -13,6 +13,7 @@ from services.consilium import (
     parse_models_from_message,
     select_default_consilium_models,
 )
+from services.analytics import log_image_usage, log_text_usage
 from services.generation import CATEGORY_TITLES, build_models_messages, generate_image, generate_text
 from services.memory import (
     add_message,
@@ -37,6 +38,7 @@ class MessageProcessingRequest:
     user_id: str
     bot_username: str | None = None
     username: str | None = None
+    platform: str = "telegram"
 
 
 @dataclass
@@ -336,6 +338,13 @@ async def execute_routed_request(
         image_url = await generate_image(content)
         if image_url:
             responses.append(MessageResponse(photo_url=image_url))
+            log_image_usage(
+                platform=request.platform,
+                chat_id=str(chat_id),
+                user_id=str(user_id),
+                model_id=BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL"),
+                prompt=content,
+            )
         else:
             responses.append(MessageResponse(text="Не удалось сгенерировать изображение."))
     elif request_type == "search":
@@ -361,6 +370,14 @@ async def execute_routed_request(
             search_results=search_results,
             use_context=use_context,
             on_model_switch=notify_model_switch,
+        )
+        log_text_usage(
+            platform=request.platform,
+            chat_id=str(chat_id),
+            user_id=str(user_id),
+            model_id=used_model,
+            prompt=prompt_with_search,
+            response=response_text,
         )
 
         responses.extend(MessageResponse(text=notice) for notice in _build_context_guard_notices(context_info))
@@ -446,6 +463,14 @@ async def execute_routed_request(
             use_context=use_context,
             on_model_switch=notify_model_switch,
         )
+        log_text_usage(
+            platform=request.platform,
+            chat_id=str(chat_id),
+            user_id=str(user_id),
+            model_id=used_model,
+            prompt=final_prompt,
+            response=response_text,
+        )
 
         responses.extend(MessageResponse(text=notice) for notice in _build_context_guard_notices(context_info))
 
@@ -495,10 +520,19 @@ async def execute_routed_request(
 
         formatted_messages = format_consilium_results(results, execution_time)
 
-        if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
-            for result in results:
-                if result.get("success") and result.get("response"):
-                    add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
+        for result in results:
+            if not result.get("success") or not result.get("response"):
+                continue
+            if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
+                add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
+            log_text_usage(
+                platform=request.platform,
+                chat_id=str(chat_id),
+                user_id=str(user_id),
+                model_id=result.get("model"),
+                prompt=prompt,
+                response=result.get("response"),
+            )
 
         max_length = 4000
         for msg in formatted_messages:
@@ -543,6 +577,14 @@ async def execute_routed_request(
             user_id,
             use_context=use_context,
             on_model_switch=notify_model_switch,
+        )
+        log_text_usage(
+            platform=request.platform,
+            chat_id=str(chat_id),
+            user_id=str(user_id),
+            model_id=used_model,
+            prompt=content,
+            response=response_text,
         )
 
         responses.extend(MessageResponse(text=notice) for notice in _build_context_guard_notices(context_info))

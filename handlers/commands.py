@@ -34,6 +34,7 @@ from services.generation import (
     fetch_models_data,
     fetch_imagerouter_models,
 )
+from services.analytics import log_text_usage
 from services.consilium import (
     parse_models_from_message,
     select_default_consilium_models,
@@ -959,6 +960,16 @@ async def consilium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         for result in results:
             if result.get("success") and result.get("response"):
                 add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
+    for result in results:
+        if result.get("success") and result.get("response"):
+            log_text_usage(
+                platform="telegram",
+                chat_id=str(chat_id),
+                user_id=str(user_id),
+                model_id=result.get("model"),
+                prompt=prompt,
+                response=result.get("response"),
+            )
     
     # Отправляем каждое сообщение отдельно
     max_length = 4000

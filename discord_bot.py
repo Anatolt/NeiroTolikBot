@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
-from services.speech_to_text import transcribe_audio
+from services.analytics import log_stt_usage
+from services.speech_to_text import estimate_transcription_cost, transcribe_audio, trim_silence
 from services.generation import check_model_availability, init_client, refresh_models_from_api
 from services.memory import (
     create_discord_join_request,
@@ -71,6 +72,7 @@ _join_request_task: asyncio.Task | None = None
 _voice_disconnect_tasks: dict[int, asyncio.Task] = {}
 _VOICE_DISCONNECT_DELAY_SECONDS = 15
 _pending_voice_transcripts: dict[tuple[str, str], str] = {}
+_pending_voice_files: dict[tuple[str, str], dict] = {}
 
 # Инициализация клиентов и БД
 init_client()
@@ -167,6 +169,7 @@ async def _send_responses(message: discord.Message, clean_content: str) -> None:
         user_id=str(message.author.id),
         bot_username=bot.user.name if bot.user else None,
         username=str(message.author),
+        platform="discord",
     )
 
     async def _ack() -> None:
@@ -186,10 +189,33 @@ async def _handle_voice_confirmation(message: discord.Message) -> bool:
     if content.startswith("/"):
         content = content[1:]
 
-    if content not in {"yes", "y", "да", "ага", "fuf"}:
+    if content not in {"yes", "y"}:
         return False
 
     key = (str(message.channel.id), str(message.author.id))
+
+    file_entry = _pending_voice_files.pop(key, None)
+    if file_entry:
+        file_path = file_entry.get("path")
+        if not file_path or not os.path.exists(file_path):
+            return True
+        await message.channel.send("Ок, распознаю голосовое...")
+        transcript, error = await transcribe_audio(file_path)
+        try:
+            os.unlink(file_path)
+        except OSError:
+            logger.warning("Failed to remove temp file %s", file_path)
+        if transcript:
+            log_stt_usage(
+                platform="discord",
+                chat_id=str(message.channel.id),
+                user_id=str(message.author.id),
+                duration_seconds=file_entry.get("duration"),
+                size_bytes=file_entry.get("size_bytes"),
+            )
+        await _handle_transcript_result(message, transcript, error)
+        return True
+
     transcript = _pending_voice_transcripts.pop(key, None)
     if not transcript:
         return False
@@ -201,6 +227,33 @@ async def _handle_voice_confirmation(message: discord.Message) -> bool:
             "/voice_msg_conversation_on"
         )
     return True
+
+
+async def _handle_transcript_result(
+    message: discord.Message, transcript: str | None, error: str | None
+) -> bool:
+    if not transcript:
+        await message.channel.send("Не удалось распознать голосовое сообщение.")
+        if error:
+            logger.warning("Discord audio STT error: %s", error)
+        return False
+
+    await message.channel.send(f"Текст голосового:\n{transcript}")
+
+    if get_voice_auto_reply(str(message.channel.id), str(message.author.id)):
+        await _send_responses(message, transcript)
+        return True
+
+    key = (str(message.channel.id), str(message.author.id))
+    _pending_voice_transcripts[key] = transcript
+    await message.channel.send("Нужен ответ? /yes")
+    return True
+
+
+def _format_cost_estimate(cost: float | None) -> str:
+    if cost is None:
+        return "неизвестно"
+    return f"${cost:.4f}"
 
 
 def _sync_discord_voice_channels() -> None:
@@ -230,14 +283,6 @@ async def _send_telegram_notification(text: str, discord_channel_id: str | None 
         except Exception as exc:
             logger.warning("Failed to send Telegram notification to chat %s: %s", chat_id, exc)
 
-    admins = get_all_admins()
-    if admins:
-        for admin in admins:
-            chat_id = admin.get("chat_id")
-            if not chat_id:
-                continue
-            await _send(str(chat_id))
-
     flow_chat_ids: list[str] = []
     if discord_channel_id:
         flows = get_notification_flows_for_channel(discord_channel_id)
@@ -247,7 +292,7 @@ async def _send_telegram_notification(text: str, discord_channel_id: str | None 
 
     chat_id = get_voice_notification_chat_id()
     if not chat_id or flow_chat_ids:
-        if not admins and not flow_chat_ids and not chat_id:
+        if not flow_chat_ids and not chat_id:
             logger.info("No admins or flow/voice notification chat configured.")
         return
 
@@ -697,6 +742,7 @@ async def on_message(message: discord.Message) -> None:
             await message.channel.send("Распознаю голосовое сообщение...")
 
             tmp_path = None
+            size_bytes = None
             try:
                 suffix = ""
                 if audio_attachment.filename and "." in audio_attachment.filename:
@@ -704,6 +750,39 @@ async def on_message(message: discord.Message) -> None:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".ogg") as tmp_file:
                     tmp_path = tmp_file.name
                 await audio_attachment.save(tmp_path)
+
+                trimmed_path, trimmed = trim_silence(tmp_path)
+                if trimmed:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        logger.warning("Failed to remove temp file %s", tmp_path)
+                    tmp_path = trimmed_path
+
+                size_bytes = os.path.getsize(tmp_path)
+                max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
+                confirm_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_CONFIRM_MB", 5)
+                max_bytes = int(max_mb * 1024 * 1024)
+                confirm_bytes = int(confirm_mb * 1024 * 1024)
+
+                if size_bytes > max_bytes:
+                    await message.channel.send("Файл слишком большой для распознавания (лимит 10 МБ).")
+                    return
+
+                if size_bytes >= confirm_bytes:
+                    cost = estimate_transcription_cost(None, size_bytes)
+                    key = (str(message.channel.id), str(message.author.id))
+                    _pending_voice_files[key] = {
+                        "path": tmp_path,
+                        "size_bytes": size_bytes,
+                    }
+                    await message.channel.send(
+                        f"Файл большой, распознавание будет стоить примерно {_format_cost_estimate(cost)}. "
+                        "Отправлять? /yes"
+                    )
+                    tmp_path = None
+                    return
+
                 transcript, error = await transcribe_audio(tmp_path)
             finally:
                 if tmp_path and os.path.exists(tmp_path):
@@ -713,18 +792,14 @@ async def on_message(message: discord.Message) -> None:
                         logger.warning("Failed to remove temp file %s", tmp_path)
 
             if transcript:
-                await message.channel.send(f"Текст голосового:\n{transcript}")
-
-                if get_voice_auto_reply(str(message.channel.id), str(message.author.id)):
-                    await _send_responses(message, transcript)
-                    return
-
-                _pending_voice_transcripts[(str(message.channel.id), str(message.author.id))] = transcript
-                await message.channel.send("Нужен ответ? /yes")
-            else:
-                await message.channel.send("Не удалось распознать голосовое сообщение.")
-                if error:
-                    logger.warning("Discord audio STT error: %s", error)
+                log_stt_usage(
+                    platform="discord",
+                    chat_id=str(message.channel.id),
+                    user_id=str(message.author.id),
+                    duration_seconds=None,
+                    size_bytes=size_bytes,
+                )
+            await _handle_transcript_result(message, transcript, error)
             return
 
     ctx = await bot.get_context(message)

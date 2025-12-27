@@ -121,6 +121,22 @@ def init_db():
     )
     ''')
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        model TEXT,
+        char_count INTEGER DEFAULT 0,
+        token_estimate REAL DEFAULT 0,
+        estimated_cost REAL DEFAULT 0,
+        is_free BOOLEAN DEFAULT 0,
+        timestamp DATETIME NOT NULL
+    )
+    ''')
+
     # Добавляем недостающие колонки для уже созданных таблиц
     cursor.execute("PRAGMA table_info(user_settings)")
     existing_columns = {row[1] for row in cursor.fetchall()}
@@ -133,6 +149,77 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def log_usage_event(
+    platform: str,
+    chat_id: str,
+    user_id: str,
+    event_type: str,
+    model: str | None,
+    char_count: int,
+    token_estimate: float,
+    estimated_cost: float,
+    is_free: bool,
+) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO usage_events
+        (platform, chat_id, user_id, event_type, model, char_count, token_estimate, estimated_cost, is_free, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            platform,
+            chat_id,
+            user_id,
+            event_type,
+            model or "",
+            int(char_count),
+            float(token_estimate),
+            float(estimated_cost),
+            1 if is_free else 0,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_usage_summary(
+    platform: str,
+    start_ts: str,
+    end_ts: str,
+) -> dict[str, float | int]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            COUNT(DISTINCT user_id) AS users,
+            COUNT(*) AS events,
+            SUM(estimated_cost) AS total_cost,
+            SUM(CASE WHEN event_type = 'text' THEN estimated_cost ELSE 0 END) AS text_cost,
+            SUM(CASE WHEN event_type = 'image' THEN estimated_cost ELSE 0 END) AS image_cost,
+            SUM(CASE WHEN event_type = 'stt' THEN estimated_cost ELSE 0 END) AS stt_cost
+        FROM usage_events
+        WHERE platform = ?
+          AND timestamp >= ?
+          AND timestamp < ?
+        """,
+        (platform, start_ts, end_ts),
+    )
+    row = cursor.fetchone() or (0, 0, 0, 0, 0, 0)
+    conn.close()
+    return {
+        "users": int(row[0] or 0),
+        "events": int(row[1] or 0),
+        "total_cost": float(row[2] or 0),
+        "text_cost": float(row[3] or 0),
+        "image_cost": float(row[4] or 0),
+        "stt_cost": float(row[5] or 0),
+    }
 
 def add_message(chat_id: str, user_id: str, role: str, model: str, text: str, session_id: Optional[str] = None) -> None:
     """Добавление сообщения в историю."""

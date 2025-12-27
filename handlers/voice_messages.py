@@ -13,12 +13,15 @@ from handlers.message_service import (
     process_message_request,
 )
 from services.memory import get_all_admins, get_voice_auto_reply
-from services.speech_to_text import transcribe_audio
+from services.analytics import log_stt_usage
+from services.speech_to_text import estimate_transcription_cost, transcribe_audio, trim_silence
+from config import BOT_CONFIG
 
 logger = logging.getLogger(__name__)
 
 YES_VARIANTS = {"yes", "y"}
 PENDING_LLM_ROUTER_KEY = "pending_llm_routes"
+PENDING_VOICE_FILES_KEY = "pending_voice_files"
 
 
 async def _process_voice_transcript(
@@ -36,6 +39,7 @@ async def _process_voice_transcript(
         user_id=str(message.from_user.id),
         bot_username=context.bot.username,
         username=message.from_user.username if message.from_user else None,
+        platform="telegram",
     )
 
     async def _ack() -> None:
@@ -55,6 +59,65 @@ async def _process_voice_transcript(
         )
 
 
+async def _handle_transcript_result(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    transcript: str | None,
+    error: str | None,
+) -> bool:
+    message = update.message
+    if not message:
+        return False
+
+    if not transcript:
+        await message.reply_text("Не удалось распознать голосовое сообщение.")
+        if error:
+            admins = get_all_admins()
+            if admins:
+                chat_title = message.chat.title or "личка"
+                user_name = (
+                    message.from_user.username
+                    if message.from_user and message.from_user.username
+                    else str(message.from_user.id)
+                    if message.from_user
+                    else "unknown"
+                )
+                admin_text = (
+                    "STT ошибка при распознавании голосового сообщения.\n"
+                    f"Чат: {chat_title} ({message.chat_id})\n"
+                    f"Пользователь: {user_name}\n"
+                    f"Причина: {error}"
+                )
+                for admin in admins:
+                    chat_id = admin.get("chat_id")
+                    if not chat_id:
+                        continue
+                    try:
+                        await context.bot.send_message(chat_id=int(chat_id), text=admin_text)
+                    except Exception as exc:
+                        logger.warning("Failed to notify admin %s: %s", chat_id, exc)
+        return False
+
+    await message.reply_text(f"Текст голосового:\n{transcript}")
+
+    if get_voice_auto_reply(str(message.chat_id), str(message.from_user.id)):
+        await _process_voice_transcript(update, context, transcript)
+        return True
+
+    pending = context.user_data.get("pending_voice_transcripts", {})
+    pending[str(message.chat_id)] = transcript
+    context.user_data["pending_voice_transcripts"] = pending
+
+    await message.reply_text("Нужен ответ? /yes")
+    return True
+
+
+def _format_cost_estimate(cost: float | None) -> str:
+    if cost is None:
+        return "неизвестно"
+    return f"${cost:.4f}"
+
+
 async def handle_voice_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     message = update.message
     if not message or not message.text:
@@ -66,6 +129,32 @@ async def handle_voice_confirmation(update: Update, context: ContextTypes.DEFAUL
 
     if normalized not in YES_VARIANTS:
         return False
+
+    key = f"{message.chat_id}:{message.from_user.id}"
+
+    pending_files = context.user_data.get(PENDING_VOICE_FILES_KEY, {})
+    file_entry = pending_files.pop(key, None)
+    context.user_data[PENDING_VOICE_FILES_KEY] = pending_files
+    if file_entry:
+        file_path = file_entry.get("path")
+        if not file_path or not os.path.exists(file_path):
+            return True
+        await message.reply_text("Ок, распознаю голосовое...")
+        transcript, error = await transcribe_audio(file_path)
+        if transcript:
+            log_stt_usage(
+                platform="telegram",
+                chat_id=str(message.chat_id),
+                user_id=str(message.from_user.id),
+                duration_seconds=file_entry.get("duration"),
+                size_bytes=file_entry.get("size_bytes"),
+            )
+        try:
+            os.unlink(file_path)
+        except OSError:
+            logger.warning("Failed to remove temp file %s", file_path)
+        await _handle_transcript_result(update, context, transcript, error)
+        return True
 
     pending = context.user_data.get("pending_voice_transcripts", {})
     transcript = pending.pop(str(message.chat_id), None)
@@ -113,6 +202,7 @@ async def handle_llm_router_confirmation(update: Update, context: ContextTypes.D
         user_id=str(request_data.get("user_id", message.from_user.id)),
         bot_username=request_data.get("bot_username"),
         username=request_data.get("username"),
+        platform="telegram",
     )
 
     routed = RoutedRequest(
@@ -183,10 +273,48 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     await message.reply_text("Распознаю голосовое сообщение...")
 
     tmp_path = None
+    size_bytes = None
+    trimmed_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
             tmp_path = tmp_file.name
         await file.download_to_drive(tmp_path)
+
+        trimmed_path, trimmed = trim_silence(tmp_path)
+        if trimmed:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", tmp_path)
+            tmp_path = trimmed_path
+
+        size_bytes = os.path.getsize(tmp_path)
+        max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
+        confirm_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_CONFIRM_MB", 5)
+        max_bytes = int(max_mb * 1024 * 1024)
+        confirm_bytes = int(confirm_mb * 1024 * 1024)
+
+        if size_bytes > max_bytes:
+            await message.reply_text("Файл слишком большой для распознавания (лимит 10 МБ).")
+            return
+
+        if size_bytes >= confirm_bytes:
+            duration_seconds = getattr(voice, "duration", None)
+            cost = estimate_transcription_cost(duration_seconds, size_bytes)
+            pending = context.user_data.get(PENDING_VOICE_FILES_KEY, {})
+            key = f"{message.chat_id}:{message.from_user.id}"
+            pending[key] = {
+                "path": tmp_path,
+                "duration": duration_seconds,
+                "size_bytes": size_bytes,
+            }
+            context.user_data[PENDING_VOICE_FILES_KEY] = pending
+            await message.reply_text(
+                f"Файл большой, распознавание будет стоить примерно {_format_cost_estimate(cost)}. "
+                "Отправлять? /yes"
+            )
+            tmp_path = None
+            return
 
         transcript, error = await transcribe_audio(tmp_path)
     finally:
@@ -196,43 +324,12 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             except OSError:
                 logger.warning("Failed to remove temp file %s", tmp_path)
 
-    if not transcript:
-        await message.reply_text("Не удалось распознать голосовое сообщение.")
-        if error:
-            admins = get_all_admins()
-            if admins:
-                chat_title = message.chat.title or "личка"
-                user_name = (
-                    message.from_user.username
-                    if message.from_user and message.from_user.username
-                    else str(message.from_user.id)
-                    if message.from_user
-                    else "unknown"
-                )
-                admin_text = (
-                    "STT ошибка при распознавании голосового сообщения.\n"
-                    f"Чат: {chat_title} ({message.chat_id})\n"
-                    f"Пользователь: {user_name}\n"
-                    f"Причина: {error}"
-                )
-                for admin in admins:
-                    chat_id = admin.get("chat_id")
-                    if not chat_id:
-                        continue
-                    try:
-                        await context.bot.send_message(chat_id=int(chat_id), text=admin_text)
-                    except Exception as exc:
-                        logger.warning("Failed to notify admin %s: %s", chat_id, exc)
-        return
-
-    await message.reply_text(f"Текст голосового:\n{transcript}")
-
-    if get_voice_auto_reply(str(message.chat_id), str(message.from_user.id)):
-        await _process_voice_transcript(update, context, transcript)
-        return
-
-    pending = context.user_data.get("pending_voice_transcripts", {})
-    pending[str(message.chat_id)] = transcript
-    context.user_data["pending_voice_transcripts"] = pending
-
-    await message.reply_text("Нужен ответ? /yes")
+    if transcript:
+        log_stt_usage(
+            platform="telegram",
+            chat_id=str(message.chat_id),
+            user_id=str(message.from_user.id),
+            duration_seconds=getattr(voice, "duration", None),
+            size_bytes=size_bytes,
+        )
+    await _handle_transcript_result(update, context, transcript, error)

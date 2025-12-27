@@ -138,6 +138,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_id=user_id,
         bot_username=bot_username,
         username=message.from_user.username if message.from_user else None,
+        platform="telegram",
     )
 
     async def _ack() -> None:

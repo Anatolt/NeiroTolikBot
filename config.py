@@ -52,6 +52,14 @@ BOT_CONFIG = {
         "gpt-4o-transcribe",
     ],
     "VOICE_MODEL": "whisper-1",
+    "VOICE_TRANSCRIBE_MAX_MB": 10,
+    "VOICE_TRANSCRIBE_CONFIRM_MB": 5,
+    "VOICE_TRANSCRIBE_COST_PER_MIN": 0.006,
+
+    # Usage cost estimates (rough)
+    "TEXT_COST_PER_1K_TOKENS": 0.2,
+    "IMAGE_COST_PER_GENERATION": 0.04,
+    "FREE_MODELS": [],
 
     # Admin
     "ADMIN_PASS": None,
