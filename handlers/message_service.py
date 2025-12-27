@@ -46,6 +46,18 @@ class MessageResponse:
     parse_mode: str | None = None
 
 
+@dataclass
+class RoutedRequest:
+    request_type: str
+    content: str
+    suggested_models: List[str]
+    model: str | None
+    category: str | None
+    use_context: bool
+    reason: str | None
+    user_routing_mode: str
+
+
 _ROUTING_RULES_KEYWORDS = {
     "роутинг алгоритмами",
     "роутинг правилами",
@@ -234,123 +246,18 @@ async def send_models_by_request(
     return [MessageResponse(text=part) for part in parts]
 
 
-async def process_message_request(
-    request: MessageProcessingRequest,
-    ack_callback: Optional[Callable[[], Awaitable[None]]] = None,
-) -> List[MessageResponse]:
-    """Общая бизнес-логика обработки входящих сообщений для любых платформ."""
-
-    responses: List[MessageResponse] = []
-
-    if not request.text:
-        logger.debug("Received empty text, ignoring")
-        return responses
-
-    text = request.text
-    chat_id = request.chat_id
-    user_id = request.user_id
-    bot_username = request.bot_username
-
-    show_response_header = get_show_response_header(chat_id, user_id)
-    preferred_model = get_preferred_model(chat_id, user_id)
-    effective_text = text
-
-    logger.info(
-        "Processing message '%s' from user %s in chat %s",
-        text,
-        request.username or user_id,
-        chat_id,
-    )
-
-    normalized_text = effective_text.strip()
-
-    if normalized_text.lower() in _MODEL_PREFERENCE_RESET_KEYWORDS:
-        set_preferred_model(chat_id, user_id, None)
-        responses.append(
-            MessageResponse(
-                text=(
-                    "🔄 Вернулся к стандартной модели. Чтобы снова закрепить модель, напиши 'отвечай всегда с gpt'."
-                )
-            )
-        )
-        return responses
-
-    model_preference_match = _MODEL_PREFERENCE_PATTERN.match(normalized_text)
-    if model_preference_match:
-        requested_model = model_preference_match.group(1).strip()
-        resolved_model = _resolve_model_alias(requested_model)
-
-        if not resolved_model:
-            available_aliases = ", ".join(sorted(BOT_CONFIG.get("MODELS", {}).keys()))
-            responses.append(
-                MessageResponse(text=f"❌ Я не знаю модель '{requested_model}'. Доступные варианты: {available_aliases}.")
-            )
-            return responses
-
-        set_preferred_model(chat_id, user_id, resolved_model)
-        preferred_model = resolved_model
-        responses.append(
-            MessageResponse(
-                text=(
-                    "✅ Запомнил: буду отвечать через выбранную модель, пока не попросишь иначе. "
-                    "Чтобы вернуться к стандартной, напиши 'отвечай как обычно'."
-                )
-            )
-        )
-        return responses
-
-    header_toggle = _normalize_header_toggle(effective_text)
-    if header_toggle is not None:
-        set_show_response_header(chat_id, user_id, header_toggle)
-        reply = (
-            "🛠 Техшапка включена и будет показываться над ответами.\n"
-            "Чтобы скрыть, отправьте 'скрыть шапку' или команду /header_off."
-        )
-        if not header_toggle:
-            reply = (
-                "🫥 Техшапка скрыта.\n"
-                "Чтобы вернуть её, отправьте 'показывай шапку' или команду /header_on."
-            )
-
-        responses.append(MessageResponse(text=reply))
-        return responses
-
-    routing_choice = _normalize_routing_choice(effective_text)
-    if routing_choice:
-        set_routing_mode(chat_id, user_id, routing_choice)
-        mode_label = "алгоритмический" if routing_choice == "rules" else "LLM"
-        responses.append(
-            MessageResponse(
-                text=(
-                    f"🔀 Включён {mode_label} роутинг для ваших сообщений в этом чате.\n"
-                    f"Чтобы переключиться, отправьте 'роутинг алгоритмами' или 'роутинг ллм', либо используйте слеш-команды /routing_rules и /routing_llm."
-                )
-            )
-        )
-        return responses
-
-    if _is_routing_status_request(effective_text):
-        current_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
-        mode_label = "алгоритмический" if current_mode == "rules" else "LLM"
-        responses.append(MessageResponse(text=f"🔎 Текущий режим роутинга: {mode_label}."))
-        return responses
-
-    user_routing_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
-    logger.info("Routing request (mode=%s): '%s'", user_routing_mode, effective_text)
-    decision = await route_request(effective_text, bot_username, routing_mode=user_routing_mode)
+def _build_routed_request(
+    decision,
+    effective_text: str,
+    user_routing_mode: str,
+) -> RoutedRequest:
     request_type = decision.action or "text"
     content = decision.prompt or effective_text
     suggested_models = decision.target_models or []
     model = suggested_models[0] if suggested_models else None
     category = decision.category
     use_context = decision.use_context
-    logger.info(
-        "Router resolved request to: %s, model: %s, use_context: %s, reason: %s",
-        request_type,
-        model,
-        decision.use_context,
-        decision.reason,
-    )
+    reason = decision.reason
 
     if request_type == "search" and not content:
         request_type = "search_previous"
@@ -360,6 +267,36 @@ async def process_message_request(
 
     if request_type == "text" and len(suggested_models) > 1:
         request_type = "consilium"
+
+    return RoutedRequest(
+        request_type=request_type,
+        content=content,
+        suggested_models=suggested_models,
+        model=model,
+        category=category,
+        use_context=use_context,
+        reason=reason,
+        user_routing_mode=user_routing_mode,
+    )
+
+
+async def execute_routed_request(
+    request: MessageProcessingRequest,
+    routed: RoutedRequest,
+    ack_callback: Optional[Callable[[], Awaitable[None]]] = None,
+) -> List[MessageResponse]:
+    responses: List[MessageResponse] = []
+
+    chat_id = request.chat_id
+    user_id = request.user_id
+    preferred_model = get_preferred_model(chat_id, user_id)
+    show_response_header = get_show_response_header(chat_id, user_id)
+
+    request_type = routed.request_type
+    content = routed.content
+    suggested_models = routed.suggested_models
+    model = routed.model
+    use_context = routed.use_context
 
     async def notify_model_switch(failed_model: str, next_model: str, error_text: str | None) -> None:
         reason = f" ({error_text})" if error_text else ""
@@ -429,7 +366,7 @@ async def process_message_request(
 
         add_message(chat_id, user_id, "assistant", used_model, response_text)
 
-        header = _format_response_header(user_routing_mode, context_info, used_model) if show_response_header else None
+        header = _format_response_header(routed.user_routing_mode, context_info, used_model) if show_response_header else None
         reply_text = f"{header}\n\n{response_text}" if header else response_text
         responses.append(MessageResponse(text=reply_text))
     elif request_type == "search_previous":
@@ -513,7 +450,7 @@ async def process_message_request(
 
         add_message(chat_id, user_id, "assistant", used_model, response_text)
 
-        header = _format_response_header(user_routing_mode, context_info, used_model) if show_response_header else None
+        header = _format_response_header(routed.user_routing_mode, context_info, used_model) if show_response_header else None
         reply_text = f"{header}\n\n{response_text}" if header else response_text
         responses.append(MessageResponse(text=reply_text))
 
@@ -611,7 +548,7 @@ async def process_message_request(
 
         add_message(chat_id, user_id, "assistant", used_model, response_text)
 
-        header = _format_response_header(user_routing_mode, context_info, used_model) if show_response_header else None
+        header = _format_response_header(routed.user_routing_mode, context_info, used_model) if show_response_header else None
         reply_text = f"{header}\n\n{response_text}" if header else response_text
         responses.append(MessageResponse(text=reply_text))
     else:
@@ -619,3 +556,130 @@ async def process_message_request(
         responses.append(MessageResponse(text="Извините, не удалось обработать ваш запрос."))
 
     return responses
+
+
+async def process_message_request(
+    request: MessageProcessingRequest,
+    ack_callback: Optional[Callable[[], Awaitable[None]]] = None,
+    router_start_callback: Optional[Callable[[], Awaitable[None]]] = None,
+    router_decision_callback: Optional[Callable[[RoutedRequest], Awaitable[bool]]] = None,
+) -> List[MessageResponse]:
+    """Общая бизнес-логика обработки входящих сообщений для любых платформ."""
+
+    responses: List[MessageResponse] = []
+
+    if not request.text:
+        logger.debug("Received empty text, ignoring")
+        return responses
+
+    text = request.text
+    chat_id = request.chat_id
+    user_id = request.user_id
+    bot_username = request.bot_username
+
+    effective_text = text
+
+    logger.info(
+        "Processing message '%s' from user %s in chat %s",
+        text,
+        request.username or user_id,
+        chat_id,
+    )
+
+    normalized_text = effective_text.strip()
+
+    if normalized_text.lower() in _MODEL_PREFERENCE_RESET_KEYWORDS:
+        set_preferred_model(chat_id, user_id, None)
+        responses.append(
+            MessageResponse(
+                text=(
+                    "🔄 Вернулся к стандартной модели. Чтобы снова закрепить модель, напиши 'отвечай всегда с gpt'."
+                )
+            )
+        )
+        return responses
+
+    model_preference_match = _MODEL_PREFERENCE_PATTERN.match(normalized_text)
+    if model_preference_match:
+        requested_model = model_preference_match.group(1).strip()
+        resolved_model = _resolve_model_alias(requested_model)
+
+        if not resolved_model:
+            available_aliases = ", ".join(sorted(BOT_CONFIG.get("MODELS", {}).keys()))
+            responses.append(
+                MessageResponse(text=f"❌ Я не знаю модель '{requested_model}'. Доступные варианты: {available_aliases}.")
+            )
+            return responses
+
+        set_preferred_model(chat_id, user_id, resolved_model)
+        preferred_model = resolved_model
+        responses.append(
+            MessageResponse(
+                text=(
+                    "✅ Запомнил: буду отвечать через выбранную модель, пока не попросишь иначе. "
+                    "Чтобы вернуться к стандартной, напиши 'отвечай как обычно'."
+                )
+            )
+        )
+        return responses
+
+    header_toggle = _normalize_header_toggle(effective_text)
+    if header_toggle is not None:
+        set_show_response_header(chat_id, user_id, header_toggle)
+        reply = (
+            "🛠 Техшапка включена и будет показываться над ответами.\n"
+            "Чтобы скрыть, отправьте 'скрыть шапку' или команду /header_off."
+        )
+        if not header_toggle:
+            reply = (
+                "🫥 Техшапка скрыта.\n"
+                "Чтобы вернуть её, отправьте 'показывай шапку' или команду /header_on."
+            )
+
+        responses.append(MessageResponse(text=reply))
+        return responses
+
+    routing_choice = _normalize_routing_choice(effective_text)
+    if routing_choice:
+        set_routing_mode(chat_id, user_id, routing_choice)
+        mode_label = "алгоритмический" if routing_choice == "rules" else "LLM"
+        responses.append(
+            MessageResponse(
+                text=(
+                    f"🔀 Включён {mode_label} роутинг для ваших сообщений в этом чате.\n"
+                    f"Чтобы переключиться, отправьте 'роутинг алгоритмами' или 'роутинг ллм', либо используйте слеш-команды /routing_rules и /routing_llm."
+                )
+            )
+        )
+        return responses
+
+    if _is_routing_status_request(effective_text):
+        current_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
+        mode_label = "алгоритмический" if current_mode == "rules" else "LLM"
+        responses.append(MessageResponse(text=f"🔎 Текущий режим роутинга: {mode_label}."))
+        return responses
+
+    user_routing_mode = get_routing_mode(chat_id, user_id) or BOT_CONFIG.get("ROUTING_MODE", "rules")
+    if user_routing_mode == "llm" and router_start_callback:
+        try:
+            await router_start_callback()
+        except Exception as exc:
+            logger.warning("Failed to send router start message: %s", exc)
+
+    logger.info("Routing request (mode=%s): '%s'", user_routing_mode, effective_text)
+    decision = await route_request(effective_text, bot_username, routing_mode=user_routing_mode)
+    routed = _build_routed_request(decision, effective_text, user_routing_mode)
+    logger.info(
+        "Router resolved request to: %s, model: %s, use_context: %s, reason: %s",
+        routed.request_type,
+        routed.model,
+        routed.use_context,
+        routed.reason,
+    )
+
+    if user_routing_mode == "llm" and router_decision_callback:
+        proceed = await router_decision_callback(routed)
+        if not proceed:
+            return responses
+
+    return await execute_routed_request(request, routed, ack_callback=ack_callback)

@@ -2,7 +2,7 @@ import logging
 import os
 import asyncio
 from pathlib import Path
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from config import BOT_CONFIG
 from utils.helpers import post_init, notify_admins_on_startup, resolve_system_prompt
@@ -15,7 +15,13 @@ from handlers.commands import (
     models_free_command,
     models_large_context_command,
     models_paid_command,
+    models_pic_command,
     models_specialized_command,
+    models_voice_command,
+    models_free_callback,
+    set_text_model_command,
+    set_voice_model_command,
+    set_pic_model_command,
     setflow_command,
     flow_command,
     unsetflow_command,
@@ -142,6 +148,12 @@ async def main() -> None:
     application.add_handler(CommandHandler("models_large_context", models_large_context_command))
     application.add_handler(CommandHandler("models_specialized", models_specialized_command))
     application.add_handler(CommandHandler("models_all", models_all_command))
+    application.add_handler(CommandHandler("models_voice", models_voice_command))
+    application.add_handler(CommandHandler("models_pic", models_pic_command))
+    application.add_handler(CommandHandler("set_text_model", set_text_model_command))
+    application.add_handler(CommandHandler("set_voice_model", set_voice_model_command))
+    application.add_handler(CommandHandler("set_pic_model", set_pic_model_command))
+    application.add_handler(CallbackQueryHandler(models_free_callback, pattern="^models_free:page:"))
     application.add_handler(CommandHandler("consilium", consilium_command))
     application.add_handler(CommandHandler("selftest", selftest_command))
     application.add_handler(CommandHandler("header_on", header_on_command))

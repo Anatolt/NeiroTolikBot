@@ -27,6 +27,20 @@ BOT_CONFIG = {
         "MAX_ATTEMPTS": 60,
         "POLLING_INTERVAL": 2
     },
+    "IMAGE_MODELS": [
+        "Qubico/flux1-schnell",
+        "gpt-4o-image",
+        "gemini-2.5-flash-image",
+        "nano-banana-pro",
+    ],
+
+    # Voice Recognition Settings
+    "VOICE_MODELS": [
+        "whisper-1",
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe",
+    ],
+    "VOICE_MODEL": "whisper-1",
 
     # Admin
     "ADMIN_PASS": None,
@@ -92,6 +106,10 @@ BOT_CONFIG = {
     # Исключенные модели (например, требующие аудио)
     "EXCLUDED_MODELS": [
         "google/gemini-2.0-flash-exp:free",
+    ],
+    # Модели, которые не принимают system/developer инструкции
+    "NO_SYSTEM_MODELS": [
+        "google/gemma",
     ],
 
     # Ordered list of fallback моделей, если запрошенная недоступна

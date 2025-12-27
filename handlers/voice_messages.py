@@ -6,13 +6,19 @@ from telegram import Update
 from telegram.constants import ChatType
 from telegram.ext import ContextTypes
 
-from handlers.message_service import MessageProcessingRequest, process_message_request
+from handlers.message_service import (
+    MessageProcessingRequest,
+    RoutedRequest,
+    execute_routed_request,
+    process_message_request,
+)
 from services.memory import get_all_admins, get_voice_auto_reply
 from services.speech_to_text import transcribe_audio
 
 logger = logging.getLogger(__name__)
 
 YES_VARIANTS = {"yes", "y", "да", "ага", "fuf"}
+PENDING_LLM_ROUTER_KEY = "pending_llm_routes"
 
 
 async def _process_voice_transcript(
@@ -74,7 +80,64 @@ async def handle_voice_confirmation(update: Update, context: ContextTypes.DEFAUL
 
 
 async def voice_confirmation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await handle_llm_router_confirmation(update, context):
+        return
     await handle_voice_confirmation(update, context)
+
+
+async def handle_llm_router_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    message = update.message
+    if not message or not message.text:
+        return False
+
+    normalized = message.text.strip().lower()
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
+
+    if normalized not in YES_VARIANTS:
+        return False
+
+    pending = context.user_data.get(PENDING_LLM_ROUTER_KEY, {})
+    key = f"{message.chat_id}:{message.from_user.id}"
+    entry = pending.pop(key, None)
+    context.user_data[PENDING_LLM_ROUTER_KEY] = pending
+
+    if not entry:
+        return False
+
+    request_data = entry.get("request", {})
+    routed_data = entry.get("routed", {})
+
+    request = MessageProcessingRequest(
+        text=request_data.get("text", ""),
+        chat_id=str(request_data.get("chat_id", message.chat_id)),
+        user_id=str(request_data.get("user_id", message.from_user.id)),
+        bot_username=request_data.get("bot_username"),
+        username=request_data.get("username"),
+    )
+
+    routed = RoutedRequest(
+        request_type=routed_data.get("request_type", "text"),
+        content=routed_data.get("content", request.text),
+        suggested_models=routed_data.get("suggested_models", []),
+        model=routed_data.get("model"),
+        category=routed_data.get("category"),
+        use_context=bool(routed_data.get("use_context", True)),
+        reason=routed_data.get("reason"),
+        user_routing_mode=routed_data.get("user_routing_mode", "llm"),
+    )
+
+    async def _ack() -> None:
+        await message.reply_text("✅ Принял запрос, выполняю...")
+
+    responses = await execute_routed_request(request, routed, ack_callback=_ack)
+    for response in responses:
+        if response.photo_url:
+            await message.reply_photo(response.photo_url)
+        elif response.text:
+            await message.reply_text(response.text, parse_mode=response.parse_mode)
+
+    return True
 
 
 async def _should_handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:

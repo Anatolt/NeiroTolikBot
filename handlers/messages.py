@@ -148,7 +148,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     async def _ack() -> None:
         await message.reply_text("✅ Принял запрос, думаю...")
 
-    responses = await process_message_request(request, ack_callback=_ack)
+    async def _router_start() -> None:
+        await message.reply_text("🤖 Обращаюсь в LLM роутер...")
+
+    async def _router_decision(routed) -> bool:
+        router_model = BOT_CONFIG.get("ROUTER_MODEL") or BOT_CONFIG.get("DEFAULT_MODEL")
+        action = routed.request_type
+        reason = routed.reason or "без пояснения"
+        model_list = ", ".join(routed.suggested_models) if routed.suggested_models else "не указаны"
+        info = (
+            f"🤖 Ответ от LLM роутера ({router_model}).\n"
+            f"Действие: {action}\n"
+            f"Модели: {model_list}\n"
+            f"Причина: {reason}\n"
+            "Предлагается к исполнению. Нужен ответ? /yes"
+        )
+
+        pending = context.user_data.get("pending_llm_routes", {})
+        key = f"{chat_id}:{user_id}"
+        pending[key] = {
+            "request": {
+                "text": effective_text,
+                "chat_id": chat_id,
+                "user_id": user_id,
+                "bot_username": bot_username,
+                "username": message.from_user.username if message.from_user else None,
+            },
+            "routed": {
+                "request_type": routed.request_type,
+                "content": routed.content,
+                "suggested_models": routed.suggested_models,
+                "model": routed.model,
+                "category": routed.category,
+                "use_context": routed.use_context,
+                "reason": routed.reason,
+                "user_routing_mode": routed.user_routing_mode,
+            },
+        }
+        context.user_data["pending_llm_routes"] = pending
+
+        await message.reply_text(info)
+        return False
+
+    responses = await process_message_request(
+        request,
+        ack_callback=_ack,
+        router_start_callback=_router_start,
+        router_decision_callback=_router_decision,
+    )
 
     for response in responses:
         if response.photo_url:

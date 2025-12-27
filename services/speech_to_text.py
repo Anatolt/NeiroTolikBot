@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 from openai import AsyncOpenAI
 
 from config import BOT_CONFIG
+from services.memory import get_voice_model
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +31,12 @@ async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]
         logger.warning("OPENAI_API_KEY is not configured; skipping transcription.")
         return None, "OPENAI_API_KEY is not configured"
 
+    model_name = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
+
     try:
         with open(file_path, "rb") as file_handle:
             result = await client.audio.transcriptions.create(
-                model="whisper-1",
+                model=model_name,
                 file=file_handle,
             )
         text = result.text.strip() if result and getattr(result, "text", None) else None

@@ -340,6 +340,42 @@ def _resolve_user_model_keyword(keyword: str) -> str | None:
     return None
 
 
+def _model_disallows_system_messages(model: str | None) -> bool:
+    if not model:
+        return False
+    model_lower = model.lower()
+    for prefix in BOT_CONFIG.get("NO_SYSTEM_MODELS", []):
+        if model_lower.startswith(prefix.lower()):
+            return True
+    return False
+
+
+def _merge_system_into_user(messages: list[dict], model: str | None) -> list[dict]:
+    if not _model_disallows_system_messages(model):
+        return messages
+
+    system_texts = [m["content"] for m in messages if m.get("role") == "system" and m.get("content")]
+    if not system_texts:
+        return messages
+
+    merged_system = "\n\n".join(system_texts)
+    non_system = [m for m in messages if m.get("role") != "system"]
+    if not non_system:
+        return [{"role": "user", "content": merged_system}]
+
+    for idx, msg in enumerate(non_system):
+        if msg.get("role") == "user":
+            non_system[idx] = {
+                "role": "user",
+                "content": f"{merged_system}\n\n{msg.get('content', '')}".strip(),
+            }
+            break
+    else:
+        non_system.insert(0, {"role": "user", "content": merged_system})
+
+    return non_system
+
+
 def _build_alias_map(models_data: list[dict]) -> dict[str, str]:
     """Формирует динамическое соответствие алиасов и реальных id моделей."""
     alias_map: dict[str, str] = {}
@@ -698,6 +734,7 @@ async def generate_text(
             search_results,
             include_history=use_context,
         )
+    messages = _merge_system_into_user(messages, model)
 
     # Список моделей, которые будем пробовать по очереди
     models_to_try: list[str] = _build_models_to_try(model)

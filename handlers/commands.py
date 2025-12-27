@@ -2,7 +2,7 @@ import logging
 import time
 from io import BytesIO
 from typing import Optional
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from utils.helpers import escape_markdown_v2
 from config import BOT_CONFIG
@@ -15,6 +15,8 @@ from services.memory import (
     get_telegram_chats,
     get_all_admins,
     get_routing_mode,
+    get_preferred_model,
+    get_voice_model,
     is_admin,
     add_notification_flow,
     remove_notification_flow,
@@ -22,8 +24,10 @@ from services.memory import (
     set_show_response_header,
     start_new_dialog,
     set_voice_auto_reply,
+    set_voice_model,
+    set_preferred_model,
 )
-from services.generation import CATEGORY_TITLES, build_models_messages
+from services.generation import CATEGORY_TITLES, build_models_messages, categorize_models, fetch_models_data
 from services.consilium import (
     parse_models_from_message,
     select_default_consilium_models,
@@ -41,8 +45,88 @@ MODELS_HINT_TEXT = (
     "• /models_large_context — с большим контекстом\n"
     "• /models_specialized — специализированные\n"
     "• /models_all — полный список (может быть длинным)\n\n"
+    "🎙️ /models_voice — модели распознавания речи\n"
+    "🖼️ /models_pic — модели генерации изображений\n\n"
     "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
 )
+
+_MODELS_FREE_PAGE_SIZE = 15
+_MODELS_FREE_CALLBACK_PREFIX = "models_free:page:"
+
+def _build_image_models_text() -> str:
+    model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+    image_models = BOT_CONFIG.get("IMAGE_MODELS", [])
+    lines = ["🖼️ Модели генерации изображений:"]
+    if model:
+        lines.append(f"Текущая: {model}")
+    if image_models:
+        for idx, item in enumerate(image_models, start=1):
+            lines.append(f"{idx}) {item} — `/set_pic_model {idx}`")
+    return "\n".join(lines)
+
+
+def _build_voice_models_text() -> str:
+    voice_models = BOT_CONFIG.get("VOICE_MODELS", [])
+    current_model = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL")
+    lines = ["🎙️ Модели распознавания речи:"]
+    if current_model:
+        lines.append(f"Текущая: {current_model}")
+    if voice_models:
+        for idx, model in enumerate(voice_models, start=1):
+            lines.append(f"{idx}) {model} — `/set_voice_model {idx}`")
+    return "\n".join(lines)
+
+
+async def _get_free_model_ids() -> list[str]:
+    models_data = await fetch_models_data()
+    if not models_data:
+        return []
+    categories = categorize_models(models_data)
+    excluded = set(BOT_CONFIG.get("EXCLUDED_MODELS", []))
+    return [
+        model.get("id")
+        for model in categories.get("free", [])
+        if model.get("id") and model.get("id") not in excluded
+    ]
+
+
+def _build_free_models_page(
+    model_ids: list[str],
+    page: int,
+    current_model: str | None,
+    page_size: int = _MODELS_FREE_PAGE_SIZE,
+) -> tuple[str, int, int]:
+    total = len(model_ids)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    end = start + page_size
+    lines = [f"🆓 Бесплатные модели (страница {page}/{total_pages}):"]
+    if current_model:
+        lines.append(f"Текущая: {current_model}")
+    if not model_ids:
+        lines.append("Список моделей пуст.")
+        return "\n".join(lines)
+
+    for idx, model_id in enumerate(model_ids[start:end], start=start + 1):
+        lines.append(f"{idx}) {model_id} — `/set_text_model {idx}`")
+
+    return "\n".join(lines), page, total_pages
+
+
+def _build_free_models_markup(page: int, total_pages: int) -> InlineKeyboardMarkup | None:
+    if total_pages <= 1:
+        return None
+
+    prev_page = page - 1 if page > 1 else total_pages
+    next_page = page + 1 if page < total_pages else 1
+    keyboard = [
+        [
+            InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"{_MODELS_FREE_CALLBACK_PREFIX}{prev_page}"),
+            InlineKeyboardButton("Следующая ➡️", callback_data=f"{_MODELS_FREE_CALLBACK_PREFIX}{next_page}"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 ADMIN_COMMANDS_TEXT = (
     "👑 Команды администратора:\n"
@@ -518,7 +602,46 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def models_free_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает бесплатные модели."""
-    await _send_models(update, ["free"], CATEGORY_TITLES["free"], max_items=20)
+    args = context.args or []
+    page = 1
+    if args and args[0].isdigit():
+        page = int(args[0])
+
+    model_ids = await _get_free_model_ids()
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    message, resolved_page, total_pages = _build_free_models_page(model_ids, page, current_model)
+    markup = _build_free_models_markup(resolved_page, total_pages)
+    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=markup)
+
+
+async def models_free_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия пагинации для /models_free."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    data = query.data
+    if not data.startswith(_MODELS_FREE_CALLBACK_PREFIX):
+        return
+
+    try:
+        page = int(data.split(":")[-1])
+    except ValueError:
+        await query.answer("Некорректная страница.")
+        return
+
+    model_ids = await _get_free_model_ids()
+    chat_id = str(query.message.chat_id) if query.message else ""
+    user_id = str(query.from_user.id) if query.from_user else ""
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    message, resolved_page, total_pages = _build_free_models_page(model_ids, page, current_model)
+    markup = _build_free_models_markup(resolved_page, total_pages)
+
+    await query.answer()
+    if query.message:
+        await query.edit_message_text(message, parse_mode="Markdown", reply_markup=markup)
 
 
 async def models_paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -539,6 +662,84 @@ async def models_specialized_command(update: Update, context: ContextTypes.DEFAU
 async def models_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает полный список моделей по категориям."""
     await _send_models(update, ["free", "large_context", "specialized", "paid"], MODELS_HINT_TEXT, max_items=None)
+
+
+async def models_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает модели распознавания речи."""
+    await update.message.reply_text(_build_voice_models_text(), parse_mode="Markdown")
+
+
+async def models_pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает модели генерации изображений."""
+    await update.message.reply_text(_build_image_models_text(), parse_mode="Markdown")
+
+
+async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меняет модель распознавания речи."""
+    voice_models = BOT_CONFIG.get("VOICE_MODELS", [])
+    if not voice_models:
+        await update.message.reply_text("Список моделей распознавания речи пуст.")
+        return
+
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Использование: /set_voice_model <номер>")
+        return
+
+    index = int(args[0])
+    if index < 1 or index > len(voice_models):
+        await update.message.reply_text("Номер модели вне диапазона.")
+        return
+
+    selected = voice_models[index - 1]
+    set_voice_model(selected)
+    await update.message.reply_text(f"✅ Модель распознавания речи установлена: {selected}")
+
+
+async def set_text_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меняет модель генерации текста для пользователя в текущем чате."""
+    model_ids = await _get_free_model_ids()
+    if not model_ids:
+        await update.message.reply_text("Список бесплатных моделей пуст.")
+        return
+
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Использование: /set_text_model <номер>")
+        return
+
+    index = int(args[0])
+    if index < 1 or index > len(model_ids):
+        await update.message.reply_text("Номер модели вне диапазона.")
+        return
+
+    selected = model_ids[index - 1]
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    set_preferred_model(chat_id, user_id, selected)
+    await update.message.reply_text(f"✅ Модель текста установлена: {selected}")
+
+
+async def set_pic_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меняет модель генерации изображений."""
+    image_models = BOT_CONFIG.get("IMAGE_MODELS", [])
+    if not image_models:
+        await update.message.reply_text("Список моделей генерации изображений пуст.")
+        return
+
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Использование: /set_pic_model <номер>")
+        return
+
+    index = int(args[0])
+    if index < 1 or index > len(image_models):
+        await update.message.reply_text("Номер модели вне диапазона.")
+        return
+
+    selected = image_models[index - 1]
+    BOT_CONFIG.setdefault("IMAGE_GENERATION", {})["MODEL"] = selected
+    await update.message.reply_text(f"✅ Модель генерации изображений установлена: {selected}")
 
 
 async def selftest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
