@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import shutil
+import subprocess
 import re
 import tempfile
 from datetime import datetime
@@ -20,12 +22,16 @@ from services.memory import (
     get_all_admins,
     get_discord_autojoin,
     get_discord_autojoin_announce_sent,
+    get_last_voice_channel,
     get_notification_flows_for_channel,
     get_unprocessed_discord_join_requests,
     get_voice_auto_reply,
     get_voice_notification_chat_id,
+    get_voice_model,
     init_db,
     mark_discord_join_request_processed,
+    add_voice_log,
+    set_last_voice_channel,
     set_discord_autojoin,
     set_discord_autojoin_announce_sent,
     set_voice_auto_reply,
@@ -73,6 +79,7 @@ _voice_disconnect_tasks: dict[int, asyncio.Task] = {}
 _VOICE_DISCONNECT_DELAY_SECONDS = 15
 _pending_voice_transcripts: dict[tuple[str, str], str] = {}
 _pending_voice_files: dict[tuple[str, str], dict] = {}
+_voice_log_tasks: dict[int, asyncio.Task] = {}
 
 # Инициализация клиентов и БД
 init_client()
@@ -267,6 +274,355 @@ def _sync_discord_voice_channels() -> None:
             )
 
 
+async def _send_admin_voice_log(text: str) -> None:
+    if not telegram_bot:
+        return
+    admins = get_all_admins()
+    if not admins:
+        return
+    for admin in admins:
+        chat_id = admin.get("chat_id")
+        if not chat_id:
+            continue
+        try:
+            await telegram_bot.send_message(chat_id=int(chat_id), text=text)
+        except Exception as exc:
+            logger.warning("Failed to send voice log to admin %s: %s", chat_id, exc)
+
+
+def _format_voice_log_lines(
+    channel: discord.abc.GuildChannel | None,
+    items: list[tuple[str, str]],
+) -> str:
+    channel_title = getattr(channel, "name", "unknown")
+    header = f"🎧 Голосовой лог Discord: {channel_title}"
+    lines = [header]
+    for username, text in items:
+        lines.append(f"{username}: {text}")
+    return "\n".join(lines)
+
+
+def _get_ffmpeg_path() -> str | None:
+    for candidate in (shutil.which("ffmpeg"), "/usr/bin/ffmpeg", "/bin/ffmpeg"):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+async def _convert_voice_log_audio(src_path: str) -> tuple[str, bool, str | None]:
+    ffmpeg_path = _get_ffmpeg_path()
+    if not ffmpeg_path:
+        return src_path, False, "ffmpeg_missing"
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+            dst_path = tmp_file.name
+
+        cmd = [
+            ffmpeg_path,
+            "-y",
+            "-i",
+            src_path,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            dst_path,
+        ]
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("ffmpeg voice log convert failed: %s", result.stderr.strip())
+            try:
+                os.unlink(dst_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", dst_path)
+            return src_path, False, result.stderr.strip() or "convert_failed"
+        if not os.path.exists(dst_path) or os.path.getsize(dst_path) == 0:
+            try:
+                os.unlink(dst_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", dst_path)
+            return src_path, False, "convert_empty"
+
+        return dst_path, True, None
+    except Exception as exc:
+        logger.warning("Failed to convert voice log audio: %s", exc)
+        return src_path, False, str(exc)
+
+
+async def _split_voice_log_audio(
+    src_path: str, segment_seconds: int = 20
+) -> tuple[list[str], str | None, str | None]:
+    ffmpeg_path = _get_ffmpeg_path()
+    if not ffmpeg_path:
+        return [src_path], None, "ffmpeg_missing"
+
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="voice_log_")
+        pattern = os.path.join(tmp_dir, "segment_%03d.mp3")
+        cmd = [
+            ffmpeg_path,
+            "-y",
+            "-i",
+            src_path,
+            "-f",
+            "segment",
+            "-segment_time",
+            str(segment_seconds),
+            "-reset_timestamps",
+            "1",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            pattern,
+        ]
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("ffmpeg voice log split failed: %s", result.stderr.strip())
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except OSError:
+                logger.warning("Failed to remove temp dir %s", tmp_dir)
+            return [src_path], None, result.stderr.strip() or "split_failed"
+
+        segments = sorted(
+            os.path.join(tmp_dir, name)
+            for name in os.listdir(tmp_dir)
+            if name.endswith(".mp3")
+        )
+        if not segments:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except OSError:
+                logger.warning("Failed to remove temp dir %s", tmp_dir)
+            return [src_path], None, "split_no_segments"
+
+        return segments, tmp_dir, None
+    except Exception as exc:
+        logger.warning("Failed to split voice log audio: %s", exc)
+        return [src_path], None, str(exc)
+
+
+async def _process_voice_log_sink(
+    sink: discord.sinks.Sink, voice_client: discord.VoiceClient
+) -> None:
+    channel = getattr(voice_client, "channel", None)
+    guild = getattr(channel, "guild", None)
+
+    items: list[tuple[str, str]] = []
+    debug_lines: list[str] = []
+    if not sink.audio_data:
+        logger.info("Voice log sink empty for channel %s", getattr(channel, "id", "unknown"))
+    else:
+        user_keys = []
+        for user_key in sink.audio_data.keys():
+            user_keys.append(getattr(user_key, "id", user_key))
+        logger.info(
+            "Voice log sink users for channel %s: %s",
+            getattr(channel, "id", "unknown"),
+            ",".join(str(key) for key in user_keys),
+        )
+    for user_key, audio in sink.audio_data.items():
+        member = None
+        user_id = None
+        username = None
+        if hasattr(user_key, "id"):
+            user_id = int(user_key.id)
+            member = guild.get_member(user_id) if guild else None
+            username = getattr(user_key, "display_name", None) or getattr(user_key, "name", None)
+        else:
+            try:
+                user_id = int(user_key)
+            except (TypeError, ValueError):
+                user_id = None
+            if user_id and guild:
+                member = guild.get_member(user_id)
+            if member:
+                username = member.display_name
+            elif user_id:
+                try:
+                    fetched = await bot.fetch_user(user_id)
+                    username = getattr(fetched, "name", None)
+                except Exception:
+                    username = None
+        if member and member.bot:
+            continue
+
+        tmp_path = None
+        converted_path = None
+        segment_dir = None
+        segment_paths: list[str] = []
+        size_bytes = None
+        try:
+            debug_prefix = f"user={username or user_id or user_key}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                tmp_path = tmp_file.name
+                audio.file.seek(0)
+                tmp_file.write(audio.file.read())
+
+            with open(tmp_path, "rb") as verify_handle:
+                header = verify_handle.read(12)
+            if not (header.startswith(b"RIFF") and b"WAVE" in header):
+                logger.warning("Skipping non-wav audio for user %s", user_id)
+                debug_lines.append(f"{debug_prefix} skip=non_wav")
+                continue
+
+            audio_path, converted, convert_error = await _convert_voice_log_audio(tmp_path)
+            if converted:
+                converted_path = audio_path
+                debug_lines.append(f"{debug_prefix} converted=mp3")
+            elif convert_error:
+                debug_lines.append(f"{debug_prefix} convert_error={convert_error}")
+            size_bytes = os.path.getsize(audio_path)
+            max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
+            max_bytes = int(max_mb * 1024 * 1024)
+            if size_bytes > max_bytes:
+                segment_paths, segment_dir, split_error = await _split_voice_log_audio(audio_path)
+                if len(segment_paths) == 1:
+                    logger.info("Skipping audio over limit for user %s (%s bytes)", user_id, size_bytes)
+                    if split_error:
+                        debug_lines.append(
+                            f"{debug_prefix} skip=over_limit size={size_bytes} split_error={split_error}"
+                        )
+                    else:
+                        debug_lines.append(f"{debug_prefix} skip=over_limit size={size_bytes}")
+                    continue
+                debug_lines.append(
+                    f"{debug_prefix} split_segments={len(segment_paths)} size={size_bytes}"
+                )
+            else:
+                segment_paths = [audio_path]
+            if size_bytes < 256:
+                logger.info("Skipping too small audio for user %s (%s bytes)", user_id, size_bytes)
+                debug_lines.append(f"{debug_prefix} skip=too_small size={size_bytes}")
+                continue
+
+            voice_model = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
+            debug_lines.append(f"{debug_prefix} stt_model={voice_model} size={size_bytes}")
+            transcript_parts: list[str] = []
+            for idx, segment_path in enumerate(segment_paths, start=1):
+                segment_size = os.path.getsize(segment_path)
+                transcript, error = await transcribe_audio(segment_path)
+                if not transcript:
+                    if error:
+                        logger.warning("Discord channel STT error: %s", error)
+                        debug_lines.append(f"{debug_prefix} stt_error_part{idx}={error}")
+                    continue
+                transcript_parts.append(transcript)
+                debug_lines.append(
+                    f"{debug_prefix} stt_ok_part{idx} size={segment_size} chars={len(transcript)}"
+                )
+
+            if not transcript_parts:
+                continue
+
+            transcript = " ".join(transcript_parts)
+
+            username = username or (member.display_name if member else str(user_id))
+            items.append((username, transcript))
+            add_voice_log(
+                platform="discord",
+                guild_id=str(guild.id) if guild else None,
+                channel_id=str(channel.id) if channel else "unknown",
+                user_id=str(user_id or user_key),
+                username=username,
+                text=transcript,
+            )
+            log_stt_usage(
+                platform="discord",
+                chat_id=str(channel.id) if channel else "unknown",
+                user_id=str(user_id),
+                duration_seconds=None,
+                size_bytes=size_bytes,
+            )
+        finally:
+            if segment_dir and os.path.exists(segment_dir):
+                try:
+                    shutil.rmtree(segment_dir, ignore_errors=True)
+                except OSError:
+                    logger.warning("Failed to remove temp dir %s", segment_dir)
+            if converted_path and os.path.exists(converted_path):
+                try:
+                    os.unlink(converted_path)
+                except OSError:
+                    logger.warning("Failed to remove temp file %s", converted_path)
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    logger.warning("Failed to remove temp file %s", tmp_path)
+
+    if items or debug_lines:
+        message_parts: list[str] = []
+        if items:
+            logger.info(
+                "Voice log collected %d entries for channel %s",
+                len(items),
+                getattr(channel, "id", "unknown"),
+            )
+            message_parts.append(_format_voice_log_lines(channel, items))
+        if debug_lines:
+            message_parts.append("🧪 Voice log debug:\n" + "\n".join(debug_lines))
+        await _send_admin_voice_log("\n\n".join(message_parts))
+
+
+async def _voice_log_callback(
+    sink: discord.sinks.Sink,
+    voice_client: discord.VoiceClient,
+    done_event: asyncio.Event,
+) -> None:
+    await _process_voice_log_sink(sink, voice_client)
+    done_event.set()
+
+
+async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
+    interval = int(BOT_CONFIG.get("VOICE_LOG_INTERVAL_SECONDS", 60))
+    while voice_client and voice_client.is_connected():
+        if getattr(voice_client, "recording", False):
+            await asyncio.sleep(1)
+            continue
+        sink = discord.sinks.WaveSink()
+        done_event = asyncio.Event()
+        try:
+            voice_client.start_recording(sink, _voice_log_callback, voice_client, done_event)
+            await asyncio.sleep(interval)
+        except Exception as exc:
+            logger.warning("Voice log recording failed: %s", exc)
+            await asyncio.sleep(interval)
+        finally:
+            try:
+                await asyncio.to_thread(voice_client.stop_recording)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                logger.warning("Voice log processing timed out")
+
+
+def _ensure_voice_log_task(voice_client: discord.VoiceClient) -> None:
+    if not BOT_CONFIG.get("VOICE_LOG_ENABLED", True):
+        return
+    if not voice_client or not voice_client.is_connected():
+        return
+    guild_id = voice_client.guild.id if voice_client.guild else None
+    if guild_id is None:
+        return
+    task = _voice_log_tasks.get(guild_id)
+    if task and not task.done():
+        return
+    _voice_log_tasks[guild_id] = asyncio.create_task(_voice_log_loop(voice_client))
+
+
 async def _send_telegram_notification(text: str, discord_channel_id: str | None = None) -> None:
     if not telegram_bot:
         logger.warning("Telegram bot token not configured, cannot send notifications.")
@@ -374,12 +730,11 @@ async def _process_join_requests_loop() -> None:
                     elif channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
                         await _notify_discord_user(user_id, "Админ разрешил, но это не голосовой канал.")
                     else:
-                        voice_client = channel.guild.voice_client
                         try:
-                            if voice_client and voice_client.is_connected():
-                                await voice_client.move_to(channel)
-                            else:
-                                await channel.connect()
+                            voice_client = await _connect_voice_channel(channel)
+                            if voice_client:
+                                _ensure_voice_log_task(voice_client)
+                            set_last_voice_channel(str(channel.guild.id), str(channel.id))
                             await _notify_discord_user(user_id, "Админ разрешил. Подключаюсь.")
                         except Exception as exc:
                             await _notify_discord_user(user_id, "Админ разрешил, но не смог подключиться.")
@@ -408,6 +763,9 @@ async def _disconnect_if_empty(guild_id: int) -> None:
     humans = [m for m in channel.members if not m.bot]
     if not humans:
         try:
+            task = _voice_log_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
             await voice_client.disconnect()
         except Exception as exc:
             logger.warning("Failed to auto-leave voice channel: %s", exc)
@@ -456,19 +814,60 @@ def _pick_announcement_channel(guild: discord.Guild) -> discord.TextChannel | No
     return None
 
 
+async def _connect_voice_channel(channel: discord.VoiceChannel | discord.StageChannel) -> discord.VoiceClient | None:
+    voice_client = channel.guild.voice_client
+    if voice_client and voice_client.is_connected():
+        await voice_client.move_to(channel)
+    else:
+        voice_client = await channel.connect()
+
+    try:
+        await channel.guild.change_voice_state(channel=channel, self_deaf=False, self_mute=False)
+    except Exception as exc:
+        logger.warning("Failed to set voice state for receive: %s", exc)
+
+    return voice_client
+
+
 @bot.event
 async def on_ready():
     logger.info("Discord bot connected as %s (id=%s)", bot.user, bot.user.id if bot.user else "n/a")
     _sync_discord_voice_channels()
-    try:
-        await bot.tree.sync()
-        logger.info("Discord app commands synced.")
-    except Exception as exc:
-        logger.warning("Failed to sync Discord app commands: %s", exc)
+    if hasattr(bot, "sync_commands"):
+        try:
+            guild_ids = [guild.id for guild in bot.guilds] if bot.guilds else None
+            await bot.sync_commands(force=True, guild_ids=guild_ids)
+            logger.info("Discord app commands synced.")
+        except Exception as exc:
+            logger.warning("Failed to sync Discord app commands: %s", exc)
 
     global _join_request_task
     if _join_request_task is None or _join_request_task.done():
         _join_request_task = asyncio.create_task(_process_join_requests_loop())
+
+    for guild in bot.guilds:
+        last_channel_id = get_last_voice_channel(str(guild.id))
+        if not last_channel_id:
+            continue
+        try:
+            channel = guild.get_channel(int(last_channel_id))
+        except (TypeError, ValueError):
+            channel = None
+        if channel is None or channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+            continue
+        voice_client = guild.voice_client
+        if voice_client and voice_client.is_connected():
+            try:
+                await voice_client.disconnect()
+            except Exception as exc:
+                logger.warning("Failed to disconnect before reconnect: %s", exc)
+        try:
+            voice_client = await _connect_voice_channel(channel)
+            if voice_client:
+                _ensure_voice_log_task(voice_client)
+            logger.info("Reconnected to voice channel %s in guild %s", channel.id, guild.id)
+        except Exception as exc:
+            logger.warning("Failed to reconnect to voice channel %s: %s", channel.id, exc)
 
 
 @bot.command(name="start")
@@ -481,9 +880,10 @@ async def help_command(ctx: commands.Context) -> None:
     await ctx.send(_build_discord_help_message())
 
 
-@bot.tree.command(name="help", description="Справка по командам бота")
-async def help_slash(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(_build_discord_help_message())
+if hasattr(bot, "slash_command"):
+    @bot.slash_command(name="help", description="Справка по командам бота")
+    async def help_slash(ctx: discord.ApplicationContext) -> None:
+        await ctx.respond(_build_discord_help_message())
 
 
 @bot.command(name="join")
@@ -497,42 +897,40 @@ async def join_voice_command(ctx: commands.Context) -> None:
     channel = voice_state.channel
     voice_client = ctx.voice_client
 
-    if voice_client and voice_client.is_connected():
-        if voice_client.channel.id == channel.id:
-            await ctx.send(f"Уже в канале «{channel.name}».")
-            return
-        await voice_client.move_to(channel)
-        await ctx.send(f"Перешёл в «{channel.name}».")
+    if voice_client and voice_client.is_connected() and voice_client.channel.id == channel.id:
+        await ctx.send(f"Уже в канале «{channel.name}».")
         return
 
-    await channel.connect()
+    voice_client = await _connect_voice_channel(channel)
+    if voice_client:
+        _ensure_voice_log_task(voice_client)
+    set_last_voice_channel(str(ctx.guild.id), str(channel.id))
     await ctx.send(f"Подключился к «{channel.name}».")
 
 
-@bot.tree.command(name="join", description="Подключиться к голосовому каналу")
-async def join_voice_slash(interaction: discord.Interaction) -> None:
-    if not interaction.guild:
-        await interaction.response.send_message("Команда доступна только на сервере.")
-        return
-
-    voice_state = getattr(interaction.user, "voice", None)
-    if not voice_state or not voice_state.channel:
-        await interaction.response.send_message("Сначала зайди в голосовой канал.")
-        return
-
-    channel = voice_state.channel
-    voice_client = interaction.guild.voice_client
-
-    if voice_client and voice_client.is_connected():
-        if voice_client.channel.id == channel.id:
-            await interaction.response.send_message(f"Уже в канале «{channel.name}».")
+if hasattr(bot, "slash_command"):
+    @bot.slash_command(name="join", description="Подключиться к голосовому каналу")
+    async def join_voice_slash(ctx: discord.ApplicationContext) -> None:
+        if not ctx.guild:
+            await ctx.respond("Команда доступна только на сервере.")
             return
-        await voice_client.move_to(channel)
-        await interaction.response.send_message(f"Перешёл в «{channel.name}».")
-        return
 
-    await channel.connect()
-    await interaction.response.send_message(f"Подключился к «{channel.name}».")
+        voice_state = getattr(ctx.author, "voice", None)
+        if not voice_state or not voice_state.channel:
+            await ctx.respond("Сначала зайди в голосовой канал.")
+            return
+
+        channel = voice_state.channel
+        voice_client = ctx.guild.voice_client
+        if voice_client and voice_client.is_connected() and voice_client.channel.id == channel.id:
+            await ctx.respond(f"Уже в канале «{channel.name}».")
+            return
+
+        voice_client = await _connect_voice_channel(channel)
+        if voice_client:
+            _ensure_voice_log_task(voice_client)
+        set_last_voice_channel(str(ctx.guild.id), str(channel.id))
+        await ctx.respond(f"Подключился к «{channel.name}».")
 
 
 @bot.command(name="leave")
@@ -544,22 +942,33 @@ async def leave_voice_command(ctx: commands.Context) -> None:
         return
 
     await voice_client.disconnect()
+    task = _voice_log_tasks.pop(ctx.guild.id, None) if ctx.guild else None
+    if task:
+        task.cancel()
+    if ctx.guild:
+        set_last_voice_channel(str(ctx.guild.id), None)
     await ctx.send("Отключился от голосового канала.")
 
 
-@bot.tree.command(name="leave", description="Выйти из голосового канала")
-async def leave_voice_slash(interaction: discord.Interaction) -> None:
-    if not interaction.guild:
-        await interaction.response.send_message("Команда доступна только на сервере.")
-        return
+if hasattr(bot, "slash_command"):
+    @bot.slash_command(name="leave", description="Выйти из голосового канала")
+    async def leave_voice_slash(ctx: discord.ApplicationContext) -> None:
+        if not ctx.guild:
+            await ctx.respond("Команда доступна только на сервере.")
+            return
 
-    voice_client = interaction.guild.voice_client
-    if not voice_client or not voice_client.is_connected():
-        await interaction.response.send_message("Я сейчас не в голосовом канале.")
-        return
+        voice_client = ctx.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            await ctx.respond("Я сейчас не в голосовом канале.")
+            return
 
-    await voice_client.disconnect()
-    await interaction.response.send_message("Отключился от голосового канала.")
+        await voice_client.disconnect()
+        task = _voice_log_tasks.pop(ctx.guild.id, None) if ctx.guild else None
+        if task:
+            task.cancel()
+        if ctx.guild:
+            set_last_voice_channel(str(ctx.guild.id), None)
+        await ctx.respond("Отключился от голосового канала.")
 
 
 @bot.command(name="autojoin_on")
@@ -574,15 +983,16 @@ async def autojoin_on_command(ctx: commands.Context) -> None:
     await ctx.send("Автоподключение включено.")
 
 
-@bot.tree.command(name="autojoin_on", description="Включить автоподключение к голосу")
-async def autojoin_on_slash(interaction: discord.Interaction) -> None:
-    if not interaction.guild:
-        await interaction.response.send_message("Команда доступна только на сервере.")
-        return
+if hasattr(bot, "slash_command"):
+    @bot.slash_command(name="autojoin_on", description="Включить автоподключение к голосу")
+    async def autojoin_on_slash(ctx: discord.ApplicationContext) -> None:
+        if not ctx.guild:
+            await ctx.respond("Команда доступна только на сервере.")
+            return
 
-    set_discord_autojoin(str(interaction.guild.id), True)
-    set_discord_autojoin_announce_sent(str(interaction.guild.id), False)
-    await interaction.response.send_message("Автоподключение включено.")
+        set_discord_autojoin(str(ctx.guild.id), True)
+        set_discord_autojoin_announce_sent(str(ctx.guild.id), False)
+        await ctx.respond("Автоподключение включено.")
 
 
 @bot.command(name="autojoin_off")
@@ -614,32 +1024,33 @@ async def voice_msg_conversation_off_command(ctx: commands.Context) -> None:
     )
 
 
-@bot.tree.command(name="voice_msg_conversation_on", description="Включить автоответ на голосовые сообщения")
-async def voice_msg_conversation_on_slash(interaction: discord.Interaction) -> None:
-    set_voice_auto_reply(str(interaction.channel.id), str(interaction.user.id), True)
-    await interaction.response.send_message(
-        "🔊 Автоответ на голосовые сообщения включён.\n"
-        "Отключить: /voice_msg_conversation_off"
-    )
+if hasattr(bot, "slash_command"):
+    @bot.slash_command(name="voice_msg_conversation_on", description="Включить автоответ на голосовые сообщения")
+    async def voice_msg_conversation_on_slash(ctx: discord.ApplicationContext) -> None:
+        set_voice_auto_reply(str(ctx.channel.id), str(ctx.author.id), True)
+        await ctx.respond(
+            "🔊 Автоответ на голосовые сообщения включён.\n"
+            "Отключить: /voice_msg_conversation_off"
+        )
 
 
-@bot.tree.command(name="voice_msg_conversation_off", description="Отключить автоответ на голосовые сообщения")
-async def voice_msg_conversation_off_slash(interaction: discord.Interaction) -> None:
-    set_voice_auto_reply(str(interaction.channel.id), str(interaction.user.id), False)
-    await interaction.response.send_message(
-        "🔇 Автоответ на голосовые сообщения отключён.\n"
-        "Включить: /voice_msg_conversation_on"
-    )
+    @bot.slash_command(name="voice_msg_conversation_off", description="Отключить автоответ на голосовые сообщения")
+    async def voice_msg_conversation_off_slash(ctx: discord.ApplicationContext) -> None:
+        set_voice_auto_reply(str(ctx.channel.id), str(ctx.author.id), False)
+        await ctx.respond(
+            "🔇 Автоответ на голосовые сообщения отключён.\n"
+            "Включить: /voice_msg_conversation_on"
+        )
 
 
-@bot.tree.command(name="autojoin_off", description="Отключить автоподключение к голосу")
-async def autojoin_off_slash(interaction: discord.Interaction) -> None:
-    if not interaction.guild:
-        await interaction.response.send_message("Команда доступна только на сервере.")
-        return
+    @bot.slash_command(name="autojoin_off", description="Отключить автоподключение к голосу")
+    async def autojoin_off_slash(ctx: discord.ApplicationContext) -> None:
+        if not ctx.guild:
+            await ctx.respond("Команда доступна только на сервере.")
+            return
 
-    set_discord_autojoin(str(interaction.guild.id), False)
-    await interaction.response.send_message("Автоподключение отключено.")
+        set_discord_autojoin(str(ctx.guild.id), False)
+        await ctx.respond("Автоподключение отключено.")
 
 
 @bot.event
@@ -841,7 +1252,10 @@ async def on_voice_state_update(
             voice_client = channel.guild.voice_client
             if voice_client is None or not voice_client.is_connected():
                 try:
-                    await channel.connect()
+                    voice_client = await _connect_voice_channel(channel)
+                    if voice_client:
+                        _ensure_voice_log_task(voice_client)
+                    set_last_voice_channel(str(channel.guild.id), str(channel.id))
                     if not get_discord_autojoin_announce_sent(str(channel.guild.id)):
                         announce_channel = _pick_announcement_channel(channel.guild)
                         if announce_channel:

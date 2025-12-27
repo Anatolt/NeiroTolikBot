@@ -137,6 +137,19 @@ def init_db():
     )
     ''')
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS voice_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        guild_id TEXT,
+        channel_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        username TEXT,
+        text TEXT NOT NULL,
+        timestamp DATETIME NOT NULL
+    )
+    ''')
+
     # Добавляем недостающие колонки для уже созданных таблиц
     cursor.execute("PRAGMA table_info(user_settings)")
     existing_columns = {row[1] for row in cursor.fetchall()}
@@ -220,6 +233,36 @@ def get_usage_summary(
         "image_cost": float(row[4] or 0),
         "stt_cost": float(row[5] or 0),
     }
+
+
+def add_voice_log(
+    platform: str,
+    channel_id: str,
+    user_id: str,
+    text: str,
+    guild_id: str | None = None,
+    username: str | None = None,
+) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO voice_logs
+        (platform, guild_id, channel_id, user_id, username, text, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            platform,
+            guild_id or "",
+            channel_id,
+            user_id,
+            username or "",
+            text,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 def add_message(chat_id: str, user_id: str, role: str, model: str, text: str, session_id: Optional[str] = None) -> None:
     """Добавление сообщения в историю."""
@@ -813,6 +856,42 @@ def get_discord_autojoin_announce_sent(guild_id: str) -> bool:
 
     value = result[0]
     return str(value).strip() not in {"0", "false", "False", "no", "off"}
+
+
+def set_last_voice_channel(guild_id: str, channel_id: str | None) -> None:
+    """Сохраняет последний голосовой канал Discord для гильдии."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (f"discord_last_voice_channel_{guild_id}", channel_id or "", datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_last_voice_channel(guild_id: str) -> Optional[str]:
+    """Возвращает последний голосовой канал Discord для гильдии."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        (f"discord_last_voice_channel_{guild_id}",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    value = result[0] if result else None
+    value = value.strip() if isinstance(value, str) else value
+    return value or None
 
 def remove_admin(chat_id: str, user_id: str) -> None:
     """Удаление администратора из базы данных."""
