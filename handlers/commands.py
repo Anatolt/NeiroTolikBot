@@ -16,6 +16,8 @@ from services.memory import (
     get_all_admins,
     get_routing_mode,
     get_preferred_model,
+    get_voice_log_debug,
+    get_voice_log_model,
     get_voice_model,
     is_admin,
     add_notification_flow,
@@ -24,6 +26,8 @@ from services.memory import (
     set_show_response_header,
     start_new_dialog,
     set_voice_auto_reply,
+    set_voice_log_debug,
+    set_voice_log_model,
     set_voice_model,
     set_preferred_model,
 )
@@ -53,6 +57,7 @@ MODELS_HINT_TEXT = (
     "• /models_specialized — специализированные\n"
     "• /models_all — полный список (может быть длинным)\n\n"
     "🎙️ /models_voice — модели распознавания речи\n"
+    "🎧 /voice_log_models — модели распознавания для логов\n"
     "🖼️ /models_pic — модели генерации изображений\n\n"
     "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
 )
@@ -148,6 +153,22 @@ def _build_voice_models_text() -> str:
     if voice_models:
         for idx, model in enumerate(voice_models, start=1):
             lines.append(f"{idx}) {model} — `/set_voice_model {idx}`")
+    return "\n".join(lines)
+
+
+def _build_voice_log_models_text() -> str:
+    voice_models = BOT_CONFIG.get("VOICE_MODELS", [])
+    current_model = get_voice_log_model() or get_voice_model() or BOT_CONFIG.get("VOICE_MODEL")
+    lines = ["🎧 Модели распознавания для голосовых логов:"]
+    if current_model:
+        lines.append(f"Текущая: {current_model}")
+    if not voice_models:
+        lines.append("Список моделей распознавания речи пуст.")
+        return "\n".join(lines)
+
+    lines.append("Доступные модели:")
+    for idx, model in enumerate(voice_models, start=1):
+        lines.append(f"{idx}) {model} — `/set_voice_log_model {idx}`")
     return "\n".join(lines)
 
 
@@ -747,6 +768,11 @@ async def models_voice_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(_build_voice_models_text(), parse_mode="Markdown")
 
 
+async def models_voice_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает модели распознавания для голосовых логов."""
+    await update.message.reply_text(_build_voice_log_models_text(), parse_mode="Markdown")
+
+
 async def models_pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает модели генерации изображений."""
     piapi_models, imagerouter_models, combined_models = await _refresh_image_models()
@@ -777,6 +803,42 @@ async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_
     selected = voice_models[index - 1]
     set_voice_model(selected)
     await update.message.reply_text(f"✅ Модель распознавания речи установлена: {selected}")
+
+
+async def set_voice_log_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меняет модель распознавания для голосовых логов."""
+    voice_models = BOT_CONFIG.get("VOICE_MODELS", [])
+    if not voice_models:
+        await update.message.reply_text("Список моделей распознавания речи пуст.")
+        return
+
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Использование: /set_voice_log_model <номер>")
+        return
+
+    index = int(args[0])
+    if index < 1 or index > len(voice_models):
+        await update.message.reply_text("Номер модели вне диапазона.")
+        return
+
+    selected = voice_models[index - 1]
+    set_voice_log_model(selected)
+    await update.message.reply_text(
+        f"✅ Модель распознавания логов установлена: {selected}"
+    )
+
+
+async def voice_log_debug_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Включает подробный лог распознавания."""
+    set_voice_log_debug(True)
+    await update.message.reply_text("✅ Подробный лог распознавания включен.")
+
+
+async def voice_log_debug_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отключает подробный лог распознавания."""
+    set_voice_log_debug(False)
+    await update.message.reply_text("✅ Подробный лог распознавания отключен.")
 
 
 async def set_text_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -570,6 +570,76 @@ def get_voice_model() -> Optional[str]:
     return result[0] if result else None
 
 
+def set_voice_log_model(model: str) -> None:
+    """Сохраняет модель распознавания для голосовых логов."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        ("voice_log_model", model, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_voice_log_model() -> Optional[str]:
+    """Возвращает модель распознавания для голосовых логов."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        ("voice_log_model",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result else None
+
+
+def set_voice_log_debug(enabled: bool) -> None:
+    """Включает или отключает подробный лог распознавания в Telegram."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        ("voice_log_debug", "1" if enabled else "0", datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_voice_log_debug() -> bool:
+    """Возвращает статус подробного лога распознавания."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        ("voice_log_debug",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    if not result:
+        return True
+    return result[0] not in ("0", "false", "False", "no", "off")
+
+
 def add_notification_flow(discord_channel_id: str, telegram_chat_id: str) -> None:
     """Добавляет связку Discord-канала и Telegram-чата для уведомлений."""
     conn = sqlite3.connect(DB_PATH)

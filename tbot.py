@@ -18,9 +18,11 @@ from handlers.commands import (
     models_pic_command,
     models_specialized_command,
     models_voice_command,
+    models_voice_log_command,
     models_free_callback,
     set_text_model_command,
     set_voice_model_command,
+    set_voice_log_model_command,
     set_pic_model_command,
     setflow_command,
     flow_command,
@@ -39,6 +41,8 @@ from handlers.commands import (
     routing_rules_command,
     voice_msg_conversation_off_command,
     voice_msg_conversation_on_command,
+    voice_log_debug_off_command,
+    voice_log_debug_on_command,
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
@@ -150,9 +154,11 @@ async def main() -> None:
     application.add_handler(CommandHandler("models_specialized", models_specialized_command))
     application.add_handler(CommandHandler("models_all", models_all_command))
     application.add_handler(CommandHandler("models_voice", models_voice_command))
+    application.add_handler(CommandHandler("voice_log_models", models_voice_log_command))
     application.add_handler(CommandHandler("models_pic", models_pic_command))
     application.add_handler(CommandHandler("set_text_model", set_text_model_command))
     application.add_handler(CommandHandler("set_voice_model", set_voice_model_command))
+    application.add_handler(CommandHandler("set_voice_log_model", set_voice_log_model_command))
     application.add_handler(CommandHandler("set_pic_model", set_pic_model_command))
     application.add_handler(CallbackQueryHandler(models_free_callback, pattern="^models_free:page:"))
     application.add_handler(CommandHandler("consilium", consilium_command))
@@ -164,6 +170,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("rout", routing_mode_command))
     application.add_handler(CommandHandler("voice_msg_conversation_on", voice_msg_conversation_on_command))
     application.add_handler(CommandHandler("voice_msg_conversation_off", voice_msg_conversation_off_command))
+    application.add_handler(CommandHandler("voice_log_debug_on", voice_log_debug_on_command))
+    application.add_handler(CommandHandler("voice_log_debug_off", voice_log_debug_off_command))
     application.add_handler(CommandHandler("yes", voice_confirmation_command))
     application.add_handler(CommandHandler("y", voice_confirmation_command))
     application.add_handler(CommandHandler("setflow", setflow_command))

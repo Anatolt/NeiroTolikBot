@@ -28,6 +28,8 @@ from services.memory import (
     get_notification_flows_for_channel,
     get_unprocessed_discord_join_requests,
     get_voice_auto_reply,
+    get_voice_log_debug,
+    get_voice_log_model,
     get_voice_notification_chat_id,
     get_voice_model,
     init_db,
@@ -630,7 +632,12 @@ async def _process_voice_log_sink(
     guild = getattr(channel, "guild", None)
 
     timeline_entries: list[dict[str, object]] = []
+    debug_enabled = get_voice_log_debug()
     debug_lines: list[str] = []
+
+    def _debug(line: str) -> None:
+        if debug_enabled:
+            debug_lines.append(line)
     if not sink.audio_data:
         logger.info("Voice log sink empty for channel %s", getattr(channel, "id", "unknown"))
     else:
@@ -680,12 +687,12 @@ async def _process_voice_log_sink(
                 header = verify_handle.read(12)
             if not (header.startswith(b"RIFF") and b"WAVE" in header):
                 logger.warning("Skipping non-wav audio for user %s", user_id)
-                debug_lines.append(f"{debug_prefix} skip=non_wav")
+                _debug(f"{debug_prefix} skip=non_wav")
                 continue
 
             segments, seg_stats = _detect_speech_segments(tmp_path)
             if not segments:
-                debug_lines.append(
+                _debug(
                     f"{debug_prefix} skip=no_speech stats={seg_stats}"
                 )
                 rate = float(seg_stats.get("rate", 0) or 0)
@@ -699,7 +706,7 @@ async def _process_voice_log_sink(
             for seg_idx, (start_sec, end_sec) in enumerate(segments, start=1):
                 segment_wav = _extract_wav_segment(tmp_path, start_sec, end_sec)
                 if not segment_wav:
-                    debug_lines.append(
+                    _debug(
                         f"{debug_prefix} seg{seg_idx} skip=extract_failed"
                     )
                     continue
@@ -711,9 +718,9 @@ async def _process_voice_log_sink(
                     audio_path, converted, convert_error = await _convert_voice_log_audio(segment_wav)
                     if converted:
                         converted_path = audio_path
-                        debug_lines.append(f"{debug_prefix} seg{seg_idx} converted=mp3")
+                        _debug(f"{debug_prefix} seg{seg_idx} converted=mp3")
                     elif convert_error:
-                        debug_lines.append(f"{debug_prefix} seg{seg_idx} convert_error={convert_error}")
+                        _debug(f"{debug_prefix} seg{seg_idx} convert_error={convert_error}")
 
                     size_bytes = os.path.getsize(audio_path)
                     max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
@@ -727,26 +734,31 @@ async def _process_voice_log_sink(
                                 size_bytes,
                             )
                             if split_error:
-                                debug_lines.append(
+                                _debug(
                                     f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes} split_error={split_error}"
                                 )
                             else:
-                                debug_lines.append(
+                                _debug(
                                     f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes}"
                                 )
                             continue
-                        debug_lines.append(
+                        _debug(
                             f"{debug_prefix} seg{seg_idx} split_segments={len(segment_paths)} size={size_bytes}"
                         )
                     else:
                         segment_paths = [audio_path]
                     if size_bytes < 256:
                         logger.info("Skipping too small audio for user %s (%s bytes)", user_id, size_bytes)
-                        debug_lines.append(f"{debug_prefix} seg{seg_idx} skip=too_small size={size_bytes}")
+                        _debug(f"{debug_prefix} seg{seg_idx} skip=too_small size={size_bytes}")
                         continue
 
-                    voice_model = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
-                    debug_lines.append(
+                    voice_model = (
+                        get_voice_log_model()
+                        or get_voice_model()
+                        or BOT_CONFIG.get("VOICE_MODEL")
+                        or "whisper-1"
+                    )
+                    _debug(
                         f"{debug_prefix} seg{seg_idx} stt_model={voice_model} size={size_bytes} start={start_sec:.2f} end={end_sec:.2f}"
                     )
                     transcript_parts: list[str] = []
@@ -757,13 +769,13 @@ async def _process_voice_log_sink(
                         if not transcript:
                             if error:
                                 logger.warning("Discord channel STT error: %s", error)
-                                debug_lines.append(
+                                _debug(
                                     f"{debug_prefix} seg{seg_idx} stt_error_part{part_idx}={error}"
                                 )
                             continue
                         transcript_parts.append(transcript)
                         transcribed_bytes += segment_size
-                        debug_lines.append(
+                        _debug(
                             f"{debug_prefix} seg{seg_idx} stt_ok_part{part_idx} size={segment_size} chars={len(transcript)}"
                         )
 
@@ -849,7 +861,7 @@ async def _process_voice_log_sink(
                 getattr(channel, "id", "unknown"),
             )
             message_parts.append(_format_voice_log_lines(channel, items))
-        if debug_lines:
+        if debug_enabled and debug_lines:
             message_parts.append("🧪 Voice log debug:\n" + "\n".join(debug_lines))
         message_text = "\n\n".join(message_parts)
         max_len = 3800
