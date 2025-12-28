@@ -1,4 +1,5 @@
 import asyncio
+import audioop
 import logging
 import os
 import shutil
@@ -7,6 +8,7 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+import wave
 
 import discord
 from discord.ext import commands
@@ -412,13 +414,222 @@ async def _split_voice_log_audio(
         return [src_path], None, str(exc)
 
 
+def _detect_speech_segments(
+    wav_path: str,
+    frame_ms: int = 30,
+    min_speech_ms: int = 300,
+    min_silence_ms: int = 400,
+) -> tuple[list[tuple[float, float]], dict[str, int | float]]:
+    stats: dict[str, int | float] = {}
+    try:
+        with wave.open(wav_path, "rb") as wav_file:
+            rate = wav_file.getframerate()
+            width = wav_file.getsampwidth()
+            total_frames = wav_file.getnframes()
+            channels = wav_file.getnchannels()
+            stats.update(
+                {
+                    "rate": rate,
+                    "width": width,
+                    "channels": channels,
+                    "frames": total_frames,
+                }
+            )
+
+            if width != 2:
+                return [(0.0, total_frames / rate)], stats
+
+            frames_per_window = max(1, int(rate * frame_ms / 1000))
+            rms_values: list[int] = []
+            while True:
+                data = wav_file.readframes(frames_per_window)
+                if not data:
+                    break
+                rms_values.append(audioop.rms(data, width))
+
+            if not rms_values and total_frames == 0:
+                ffmpeg_path = _get_ffmpeg_path()
+                if not ffmpeg_path:
+                    return [], stats
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".raw") as tmp_file:
+                        raw_path = tmp_file.name
+                    cmd = [
+                        ffmpeg_path,
+                        "-y",
+                        "-i",
+                        wav_path,
+                        "-ac",
+                        "1",
+                        "-ar",
+                        "16000",
+                        "-f",
+                        "s16le",
+                        raw_path,
+                    ]
+                    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                    if result.returncode != 0:
+                        logger.warning("ffmpeg decode failed: %s", result.stderr.strip())
+                        try:
+                            os.unlink(raw_path)
+                        except OSError:
+                            logger.warning("Failed to remove temp file %s", raw_path)
+                        return [], stats
+
+                    with open(raw_path, "rb") as raw_handle:
+                        raw_data = raw_handle.read()
+                    try:
+                        os.unlink(raw_path)
+                    except OSError:
+                        logger.warning("Failed to remove temp file %s", raw_path)
+
+                    raw_rate = 16000
+                    raw_width = 2
+                    frames_per_window = max(1, int(raw_rate * frame_ms / 1000))
+                    bytes_per_window = frames_per_window * raw_width
+                    rms_values = []
+                    for offset in range(0, len(raw_data), bytes_per_window):
+                        chunk = raw_data[offset : offset + bytes_per_window]
+                        if not chunk:
+                            break
+                        rms_values.append(audioop.rms(chunk, raw_width))
+                    total_frames = len(raw_data) // raw_width
+                    rate = raw_rate
+                    stats.update(
+                        {
+                            "rate": rate,
+                            "width": raw_width,
+                            "channels": 1,
+                            "frames": total_frames,
+                            "ffmpeg_decode": 1,
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to decode wav for VAD: %s", exc)
+                    return [], stats
+
+            if not rms_values:
+                return [], stats
+
+            sorted_vals = sorted(rms_values)
+            noise_floor = sorted_vals[int(len(sorted_vals) * 0.6)]
+            threshold = max(50, int(noise_floor * 1.2))
+            stats.update(
+                {
+                    "noise_floor": noise_floor,
+                    "threshold": threshold,
+                    "rms_max": max(rms_values),
+                }
+            )
+
+            min_speech_frames = max(1, int(min_speech_ms / frame_ms))
+            min_silence_frames = max(1, int(min_silence_ms / frame_ms))
+
+            segments: list[tuple[int, int]] = []
+            in_speech = False
+            start_idx = 0
+            silence_count = 0
+
+            for idx, rms in enumerate(rms_values):
+                if rms >= threshold:
+                    if not in_speech:
+                        in_speech = True
+                        start_idx = idx
+                    silence_count = 0
+                else:
+                    if in_speech:
+                        silence_count += 1
+                        if silence_count >= min_silence_frames:
+                            end_idx = idx - silence_count + 1
+                            if end_idx - start_idx >= min_speech_frames:
+                                segments.append((start_idx, end_idx))
+                            in_speech = False
+                            silence_count = 0
+
+            if in_speech:
+                end_idx = len(rms_values)
+                if end_idx - start_idx >= min_speech_frames:
+                    segments.append((start_idx, end_idx))
+
+            return (
+                [
+                    (start * frame_ms / 1000.0, end * frame_ms / 1000.0)
+                    for start, end in segments
+                ],
+                stats,
+            )
+    except Exception as exc:
+        logger.warning("Failed to detect speech segments: %s", exc)
+        return [], stats
+
+
+def _split_long_segments(
+    segments: list[tuple[float, float]], max_duration: float = 3.0
+) -> list[tuple[float, float]]:
+    if not segments:
+        return []
+    if max_duration <= 0:
+        return segments
+    result: list[tuple[float, float]] = []
+    for start, end in segments:
+        if end <= start:
+            continue
+        if end - start <= max_duration:
+            result.append((start, end))
+            continue
+        cursor = start
+        while cursor < end:
+            chunk_end = min(end, cursor + max_duration)
+            result.append((cursor, chunk_end))
+            cursor = chunk_end
+    return result
+
+
+def _extract_wav_segment(src_path: str, start_sec: float, end_sec: float) -> str | None:
+    try:
+        ffmpeg_path = _get_ffmpeg_path()
+        if not ffmpeg_path:
+            return None
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            segment_path = tmp_file.name
+
+        cmd = [
+            ffmpeg_path,
+            "-y",
+            "-ss",
+            f"{start_sec}",
+            "-to",
+            f"{end_sec}",
+            "-i",
+            src_path,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            segment_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            logger.warning("ffmpeg segment extract failed: %s", result.stderr.strip())
+            try:
+                os.unlink(segment_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", segment_path)
+            return None
+
+        return segment_path
+    except Exception as exc:
+        logger.warning("Failed to extract wav segment: %s", exc)
+        return None
+
 async def _process_voice_log_sink(
     sink: discord.sinks.Sink, voice_client: discord.VoiceClient
 ) -> None:
     channel = getattr(voice_client, "channel", None)
     guild = getattr(channel, "guild", None)
 
-    items: list[tuple[str, str]] = []
+    timeline_entries: list[dict[str, object]] = []
     debug_lines: list[str] = []
     if not sink.audio_data:
         logger.info("Voice log sink empty for channel %s", getattr(channel, "id", "unknown"))
@@ -458,10 +669,6 @@ async def _process_voice_log_sink(
             continue
 
         tmp_path = None
-        converted_path = None
-        segment_dir = None
-        segment_paths: list[str] = []
-        size_bytes = None
         try:
             debug_prefix = f"user={username or user_id or user_key}"
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
@@ -476,90 +683,162 @@ async def _process_voice_log_sink(
                 debug_lines.append(f"{debug_prefix} skip=non_wav")
                 continue
 
-            audio_path, converted, convert_error = await _convert_voice_log_audio(tmp_path)
-            if converted:
-                converted_path = audio_path
-                debug_lines.append(f"{debug_prefix} converted=mp3")
-            elif convert_error:
-                debug_lines.append(f"{debug_prefix} convert_error={convert_error}")
-            size_bytes = os.path.getsize(audio_path)
-            max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
-            max_bytes = int(max_mb * 1024 * 1024)
-            if size_bytes > max_bytes:
-                segment_paths, segment_dir, split_error = await _split_voice_log_audio(audio_path)
-                if len(segment_paths) == 1:
-                    logger.info("Skipping audio over limit for user %s (%s bytes)", user_id, size_bytes)
-                    if split_error:
+            segments, seg_stats = _detect_speech_segments(tmp_path)
+            if not segments:
+                debug_lines.append(
+                    f"{debug_prefix} skip=no_speech stats={seg_stats}"
+                )
+                rate = float(seg_stats.get("rate", 0) or 0)
+                frames = float(seg_stats.get("frames", 0) or 0)
+                if rate > 0 and frames > 0:
+                    segments = [(0.0, frames / rate)]
+                else:
+                    continue
+            segments = _split_long_segments(segments)
+
+            for seg_idx, (start_sec, end_sec) in enumerate(segments, start=1):
+                segment_wav = _extract_wav_segment(tmp_path, start_sec, end_sec)
+                if not segment_wav:
+                    debug_lines.append(
+                        f"{debug_prefix} seg{seg_idx} skip=extract_failed"
+                    )
+                    continue
+
+                converted_path = None
+                segment_dir = None
+                segment_paths: list[str] = []
+                try:
+                    audio_path, converted, convert_error = await _convert_voice_log_audio(segment_wav)
+                    if converted:
+                        converted_path = audio_path
+                        debug_lines.append(f"{debug_prefix} seg{seg_idx} converted=mp3")
+                    elif convert_error:
+                        debug_lines.append(f"{debug_prefix} seg{seg_idx} convert_error={convert_error}")
+
+                    size_bytes = os.path.getsize(audio_path)
+                    max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
+                    max_bytes = int(max_mb * 1024 * 1024)
+                    if size_bytes > max_bytes:
+                        segment_paths, segment_dir, split_error = await _split_voice_log_audio(audio_path)
+                        if len(segment_paths) == 1:
+                            logger.info(
+                                "Skipping audio over limit for user %s (%s bytes)",
+                                user_id,
+                                size_bytes,
+                            )
+                            if split_error:
+                                debug_lines.append(
+                                    f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes} split_error={split_error}"
+                                )
+                            else:
+                                debug_lines.append(
+                                    f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes}"
+                                )
+                            continue
                         debug_lines.append(
-                            f"{debug_prefix} skip=over_limit size={size_bytes} split_error={split_error}"
+                            f"{debug_prefix} seg{seg_idx} split_segments={len(segment_paths)} size={size_bytes}"
                         )
                     else:
-                        debug_lines.append(f"{debug_prefix} skip=over_limit size={size_bytes}")
-                    continue
-                debug_lines.append(
-                    f"{debug_prefix} split_segments={len(segment_paths)} size={size_bytes}"
-                )
-            else:
-                segment_paths = [audio_path]
-            if size_bytes < 256:
-                logger.info("Skipping too small audio for user %s (%s bytes)", user_id, size_bytes)
-                debug_lines.append(f"{debug_prefix} skip=too_small size={size_bytes}")
-                continue
+                        segment_paths = [audio_path]
+                    if size_bytes < 256:
+                        logger.info("Skipping too small audio for user %s (%s bytes)", user_id, size_bytes)
+                        debug_lines.append(f"{debug_prefix} seg{seg_idx} skip=too_small size={size_bytes}")
+                        continue
 
-            voice_model = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
-            debug_lines.append(f"{debug_prefix} stt_model={voice_model} size={size_bytes}")
-            transcript_parts: list[str] = []
-            for idx, segment_path in enumerate(segment_paths, start=1):
-                segment_size = os.path.getsize(segment_path)
-                transcript, error = await transcribe_audio(segment_path)
-                if not transcript:
-                    if error:
-                        logger.warning("Discord channel STT error: %s", error)
-                        debug_lines.append(f"{debug_prefix} stt_error_part{idx}={error}")
-                    continue
-                transcript_parts.append(transcript)
-                debug_lines.append(
-                    f"{debug_prefix} stt_ok_part{idx} size={segment_size} chars={len(transcript)}"
-                )
+                    voice_model = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
+                    debug_lines.append(
+                        f"{debug_prefix} seg{seg_idx} stt_model={voice_model} size={size_bytes} start={start_sec:.2f} end={end_sec:.2f}"
+                    )
+                    transcript_parts: list[str] = []
+                    transcribed_bytes = 0
+                    for part_idx, segment_path in enumerate(segment_paths, start=1):
+                        segment_size = os.path.getsize(segment_path)
+                        transcript, error = await transcribe_audio(segment_path)
+                        if not transcript:
+                            if error:
+                                logger.warning("Discord channel STT error: %s", error)
+                                debug_lines.append(
+                                    f"{debug_prefix} seg{seg_idx} stt_error_part{part_idx}={error}"
+                                )
+                            continue
+                        transcript_parts.append(transcript)
+                        transcribed_bytes += segment_size
+                        debug_lines.append(
+                            f"{debug_prefix} seg{seg_idx} stt_ok_part{part_idx} size={segment_size} chars={len(transcript)}"
+                        )
 
-            if not transcript_parts:
-                continue
+                    if not transcript_parts:
+                        continue
 
-            transcript = " ".join(transcript_parts)
-
-            username = username or (member.display_name if member else str(user_id))
-            items.append((username, transcript))
-            add_voice_log(
-                platform="discord",
-                guild_id=str(guild.id) if guild else None,
-                channel_id=str(channel.id) if channel else "unknown",
-                user_id=str(user_id or user_key),
-                username=username,
-                text=transcript,
-            )
-            log_stt_usage(
-                platform="discord",
-                chat_id=str(channel.id) if channel else "unknown",
-                user_id=str(user_id),
-                duration_seconds=None,
-                size_bytes=size_bytes,
-            )
+                    transcript = " ".join(transcript_parts)
+                    if len(transcript.strip()) < 3 and (end_sec - start_sec) < 0.6:
+                        continue
+                    username = username or (member.display_name if member else str(user_id))
+                    timeline_entries.append(
+                        {
+                            "start": start_sec,
+                            "end": end_sec,
+                            "username": username,
+                            "text": transcript,
+                        }
+                    )
+                    add_voice_log(
+                        platform="discord",
+                        guild_id=str(guild.id) if guild else None,
+                        channel_id=str(channel.id) if channel else "unknown",
+                        user_id=str(user_id or user_key),
+                        username=username,
+                        text=transcript,
+                    )
+                    log_stt_usage(
+                        platform="discord",
+                        chat_id=str(channel.id) if channel else "unknown",
+                        user_id=str(user_id),
+                        duration_seconds=None,
+                        size_bytes=transcribed_bytes or size_bytes,
+                    )
+                finally:
+                    if segment_dir and os.path.exists(segment_dir):
+                        try:
+                            shutil.rmtree(segment_dir, ignore_errors=True)
+                        except OSError:
+                            logger.warning("Failed to remove temp dir %s", segment_dir)
+                    if converted_path and os.path.exists(converted_path):
+                        try:
+                            os.unlink(converted_path)
+                        except OSError:
+                            logger.warning("Failed to remove temp file %s", converted_path)
+                    if segment_wav and os.path.exists(segment_wav):
+                        try:
+                            os.unlink(segment_wav)
+                        except OSError:
+                            logger.warning("Failed to remove temp file %s", segment_wav)
         finally:
-            if segment_dir and os.path.exists(segment_dir):
-                try:
-                    shutil.rmtree(segment_dir, ignore_errors=True)
-                except OSError:
-                    logger.warning("Failed to remove temp dir %s", segment_dir)
-            if converted_path and os.path.exists(converted_path):
-                try:
-                    os.unlink(converted_path)
-                except OSError:
-                    logger.warning("Failed to remove temp file %s", converted_path)
             if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     logger.warning("Failed to remove temp file %s", tmp_path)
+
+    items: list[tuple[str, str]] = []
+    if timeline_entries:
+        ordered_entries = sorted(timeline_entries, key=lambda item: item["start"])
+        merged_entries: list[dict[str, object]] = []
+        for entry in ordered_entries:
+            if (
+                merged_entries
+                and merged_entries[-1]["username"] == entry["username"]
+                and float(entry["start"]) - float(merged_entries[-1]["end"]) <= 0.5
+            ):
+                merged_entries[-1]["text"] = (
+                    f"{merged_entries[-1]['text']} {entry['text']}"
+                )
+                merged_entries[-1]["end"] = entry["end"]
+            else:
+                merged_entries.append(entry)
+        items = [
+            (entry["username"], entry["text"]) for entry in merged_entries
+        ]
 
     if items or debug_lines:
         message_parts: list[str] = []
@@ -572,7 +851,11 @@ async def _process_voice_log_sink(
             message_parts.append(_format_voice_log_lines(channel, items))
         if debug_lines:
             message_parts.append("🧪 Voice log debug:\n" + "\n".join(debug_lines))
-        await _send_admin_voice_log("\n\n".join(message_parts))
+        message_text = "\n\n".join(message_parts)
+        max_len = 3800
+        if len(message_text) > max_len:
+            message_text = message_text[: max_len - 20].rstrip() + "\n…(truncated)"
+        await _send_admin_voice_log(message_text)
 
 
 async def _voice_log_callback(
