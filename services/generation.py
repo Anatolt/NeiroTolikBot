@@ -897,6 +897,39 @@ async def generate_text(
     failed_model = model or BOT_CONFIG.get("DEFAULT_MODEL") or "unknown"
     return fallback_message, failed_model, guard_info
 
+
+async def translate_prompt(prompt: str, model: str) -> str | None:
+    if not prompt or not model:
+        return None
+
+    client = init_client()
+    system_prompt = (
+        "Translate the user's image prompt into concise English for image generation. "
+        "Preserve proper names and key details. "
+        "Return only the translated prompt, without quotes or extra text."
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=400,
+            temperature=0,
+        )
+
+        if not response or not hasattr(response, "choices") or not response.choices:
+            logger.error("Empty or invalid response during prompt translation")
+            return None
+
+        translated = response.choices[0].message.content.strip()
+        return translated or None
+    except Exception as exc:
+        logger.error("Error translating prompt with model %s: %s", model, exc)
+        return None
+
 def _get_image_router_models() -> set[str]:
     models = BOT_CONFIG.get("IMAGE_ROUTER_MODELS", []) or []
     return {model.lower() for model in models if isinstance(model, str)}

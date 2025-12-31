@@ -14,7 +14,7 @@ from services.consilium import (
     select_default_consilium_models,
 )
 from services.analytics import log_image_usage, log_text_usage
-from services.generation import CATEGORY_TITLES, build_models_messages, generate_image, generate_text
+from services.generation import CATEGORY_TITLES, build_models_messages, generate_image, generate_text, translate_prompt
 from services.memory import (
     add_message,
     get_history,
@@ -334,16 +334,37 @@ async def execute_routed_request(
             )
     elif request_type == "image":
         responses.append(MessageResponse(text="Генерирую изображение..."))
-        responses.append(MessageResponse(text=f"Промпт: {content}"))
-        image_url = await generate_image(content)
+        image_model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+        if routed.user_routing_mode == "llm":
+            translation_model = BOT_CONFIG.get("ROUTER_MODEL") or BOT_CONFIG.get("DEFAULT_MODEL")
+        else:
+            translation_model = preferred_model or BOT_CONFIG.get("DEFAULT_MODEL")
+
+        translated_prompt = await translate_prompt(content, translation_model)
+        if not translated_prompt:
+            translated_prompt = content
+            responses.append(
+                MessageResponse(text="⚠️ Не удалось перевести промпт, использую оригинал.")
+            )
+
+        prompt_lines = [
+            f"Промпт (оригинал): {content}",
+            f"Промпт (EN): {translated_prompt}",
+        ]
+        if image_model:
+            prompt_lines.append(f"🖼️ Модель изображения: {image_model}")
+        prompt_lines.append("Сменить генератор: /models_pic → /set_pic_model <номер>")
+        responses.append(MessageResponse(text="\n".join(prompt_lines)))
+
+        image_url = await generate_image(translated_prompt)
         if image_url:
             responses.append(MessageResponse(photo_url=image_url))
             log_image_usage(
                 platform=request.platform,
                 chat_id=str(chat_id),
                 user_id=str(user_id),
-                model_id=BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL"),
-                prompt=content,
+                model_id=image_model,
+                prompt=translated_prompt,
             )
         else:
             responses.append(MessageResponse(text="Не удалось сгенерировать изображение."))
