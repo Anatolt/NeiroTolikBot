@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 import asyncio
 import os
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Bot
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    # Ensure imports work when running the script directly.
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.memory import get_all_admins, get_usage_summary
 
