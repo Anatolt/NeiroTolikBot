@@ -1142,6 +1142,37 @@ def _pick_announcement_channel(guild: discord.Guild) -> discord.TextChannel | No
     return None
 
 
+def _count_humans_in_voice(
+    channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
+) -> int:
+    guild = getattr(channel, "guild", None)
+    if guild:
+        count = 0
+        voice_states = getattr(guild, "voice_states", None)
+        if voice_states is None:
+            voice_states = getattr(guild, "_voice_states", None)
+        if not voice_states:
+            voice_states = {}
+        for member_id, voice_state in voice_states.items():
+            if not voice_state or not voice_state.channel:
+                continue
+            if voice_state.channel.id != channel.id:
+                continue
+            if exclude_member_id is not None and member_id == exclude_member_id:
+                continue
+            member = guild.get_member(member_id)
+            if member and member.bot:
+                continue
+            count += 1
+        return count
+    members = getattr(channel, "members", None) or []
+    return sum(
+        1
+        for member in members
+        if not member.bot and (exclude_member_id is None or member.id != exclude_member_id)
+    )
+
+
 async def _connect_voice_channel(channel: discord.VoiceChannel | discord.StageChannel) -> discord.VoiceClient | None:
     voice_client = channel.guild.voice_client
     if voice_client and voice_client.is_connected():
@@ -1574,9 +1605,11 @@ async def on_voice_state_update(
     if before.channel is None and after.channel is not None:
         channel = after.channel
         guild_name = channel.guild.name if channel.guild else "Discord"
+        others_count = _count_humans_in_voice(channel, exclude_member_id=member.id)
         notification = (
             f"🎧 {member.display_name} подключился к голосовому каналу "
-            f"«{channel.name}» ({guild_name})."
+            f"«{channel.name}» ({guild_name}). "
+            f"Сейчас в чате ещё {others_count} чел."
         )
         await _send_telegram_notification(notification, discord_channel_id=str(channel.id))
 
