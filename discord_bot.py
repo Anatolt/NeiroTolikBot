@@ -81,6 +81,8 @@ telegram_bot = Bot(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]) if BOT_CONFIG.get("TELEGRAM
 _join_request_task: asyncio.Task | None = None
 _voice_disconnect_tasks: dict[int, asyncio.Task] = {}
 _VOICE_DISCONNECT_DELAY_SECONDS = 15
+_VOICE_EMPTY_NOTIFY_DELAY_SECONDS = 300
+_voice_empty_notify_tasks: dict[int, asyncio.Task] = {}
 _pending_voice_transcripts: dict[tuple[str, str], str] = {}
 _pending_voice_files: dict[tuple[str, str], dict] = {}
 _voice_log_tasks: dict[int, asyncio.Task] = {}
@@ -1066,6 +1068,37 @@ async def _disconnect_if_empty(guild_id: int) -> None:
             logger.warning("Failed to auto-leave voice channel: %s", exc)
 
 
+async def _notify_if_voice_empty(channel_id: int, guild_id: int) -> None:
+    await asyncio.sleep(_VOICE_EMPTY_NOTIFY_DELAY_SECONDS)
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            channel = None
+    if channel is None:
+        return
+    if channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+        return
+    humans = [m for m in channel.members if not m.bot]
+    if humans:
+        return
+    guild_name = guild.name or "Discord"
+    notification = (
+        f"🎧 Все вышли из голосового канала «{channel.name}» ({guild_name}). "
+        "Уже 5 минут никого нет."
+    )
+    await _send_telegram_notification(notification, discord_channel_id=str(channel.id))
+
+
+def _cleanup_voice_empty_task(channel_id: int, task: asyncio.Task) -> None:
+    if _voice_empty_notify_tasks.get(channel_id) is task:
+        _voice_empty_notify_tasks.pop(channel_id, None)
+
+
 @bot.event
 async def on_guild_join(guild: discord.Guild) -> None:
     logger.info("Joined new guild: %s (%s)", guild.name, guild.id)
@@ -1533,6 +1566,10 @@ async def on_voice_state_update(
 ) -> None:
     if member.bot:
         return
+    if after.channel is not None:
+        existing_task = _voice_empty_notify_tasks.pop(after.channel.id, None)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
 
     if before.channel is None and after.channel is not None:
         channel = after.channel
@@ -1578,6 +1615,19 @@ async def on_voice_state_update(
                 _voice_disconnect_tasks[guild_id] = asyncio.create_task(
                     _disconnect_if_empty(guild_id)
                 )
+
+    if before.channel is not None and before.channel != after.channel:
+        channel = before.channel
+        humans = [m for m in channel.members if not m.bot]
+        existing_task = _voice_empty_notify_tasks.pop(channel.id, None)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+        if not humans:
+            task = asyncio.create_task(
+                _notify_if_voice_empty(channel.id, channel.guild.id)
+            )
+            _voice_empty_notify_tasks[channel.id] = task
+            task.add_done_callback(lambda t, cid=channel.id: _cleanup_voice_empty_task(cid, t))
 
 
 async def main() -> None:
