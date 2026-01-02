@@ -201,7 +201,7 @@ def _build_free_models_page(
         lines.append(f"Текущая: {current_model}")
     if not model_ids:
         lines.append("Список моделей пуст.")
-        return "\n".join(lines)
+        return "\n".join(lines), page, total_pages
 
     for idx, model_id in enumerate(model_ids[start:end], start=start + 1):
         lines.append(f"{idx}) {model_id} — `/set_text_model {idx}`")
@@ -922,6 +922,9 @@ async def selftest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         status = "✅" if success else "❌"
         lines.append(f"{status} {name}")
         lines.append(f"    {details}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
 
     lines.extend(
         [

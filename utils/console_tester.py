@@ -41,6 +41,7 @@ from services.generation import (
 )
 from services.memory import (
     add_message,
+    add_notification_flow,
     clear_memory,
     get_history,
     init_db,
@@ -59,15 +60,29 @@ from handlers.commands import (
     models_free_command,
     models_large_context_command,
     models_paid_command,
+    models_pic_command,
     models_specialized_command,
+    models_voice_command,
+    models_voice_log_command,
     new_dialog,
     routing_llm_command,
     routing_mode_command,
     routing_rules_command,
+    set_pic_model_command,
     setflow_command,
+    set_voice_log_model_command,
+    set_voice_model_command,
     show_discord_chats_command,
     show_tg_chats_command,
     start,
+    flow_command,
+    unsetflow_command,
+    header_on_command,
+    header_off_command,
+    voice_msg_conversation_on_command,
+    voice_msg_conversation_off_command,
+    voice_log_debug_on_command,
+    voice_log_debug_off_command,
 )
 from utils.helpers import escape_markdown_v2, resolve_system_prompt
 
@@ -241,7 +256,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
         return parts
 
     with patch("services.generation.init_client", return_value=None), patch(
-        "services.generation.fetch_models_data", AsyncMock(return_value=fake_models)
+        "handlers.commands.fetch_models_data", AsyncMock(return_value=fake_models)
     ), patch("handlers.commands.build_models_messages", AsyncMock(side_effect=fake_build_messages)):
         for cmd_name, command_fn, title in [
             ("/models_free", models_free_command, "Команда /models_free (офлайн)"),
@@ -349,6 +364,186 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
             "Команда /rout",
             routing_mode_ok,
             routing_mode_message.replies[0] if routing_mode_message.replies else "Нет ответа",
+        )
+    )
+
+    # 10. Дополнительные команды (голосовые/шапка/картинки/flows)
+    original_voice_models = BOT_CONFIG.get("VOICE_MODELS")
+    BOT_CONFIG["VOICE_MODELS"] = ["test-voice-1", "test-voice-2"]
+
+    voice_models_message = FakeMessage()
+    voice_models_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_models_message)
+    await models_voice_command(voice_models_update, context)
+    voice_models_ok = bool(voice_models_message.replies) and "test-voice-1" in voice_models_message.replies[0]
+    results.append(
+        (
+            "Команда /models_voice",
+            voice_models_ok,
+            voice_models_message.replies[0] if voice_models_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_log_models_message = FakeMessage()
+    voice_log_models_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_log_models_message)
+    await models_voice_log_command(voice_log_models_update, context)
+    voice_log_models_ok = bool(voice_log_models_message.replies) and "test-voice-1" in voice_log_models_message.replies[0]
+    results.append(
+        (
+            "Команда /voice_log_models",
+            voice_log_models_ok,
+            voice_log_models_message.replies[0] if voice_log_models_message.replies else "Нет ответа",
+        )
+    )
+
+    set_voice_context = FakeContext(args=["1"])
+    set_voice_message = FakeMessage()
+    set_voice_update = FakeUpdate(effective_user=user, effective_chat=chat, message=set_voice_message)
+    await set_voice_model_command(set_voice_update, set_voice_context)
+    set_voice_ok = bool(set_voice_message.replies) and "установлена" in set_voice_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /set_voice_model",
+            set_voice_ok,
+            set_voice_message.replies[0] if set_voice_message.replies else "Нет ответа",
+        )
+    )
+
+    set_voice_log_message = FakeMessage()
+    set_voice_log_update = FakeUpdate(effective_user=user, effective_chat=chat, message=set_voice_log_message)
+    await set_voice_log_model_command(set_voice_log_update, set_voice_context)
+    set_voice_log_ok = bool(set_voice_log_message.replies) and "установлена" in set_voice_log_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /set_voice_log_model",
+            set_voice_log_ok,
+            set_voice_log_message.replies[0] if set_voice_log_message.replies else "Нет ответа",
+        )
+    )
+
+    BOT_CONFIG["VOICE_MODELS"] = original_voice_models
+
+    header_on_message = FakeMessage()
+    header_on_update = FakeUpdate(effective_user=user, effective_chat=chat, message=header_on_message)
+    await header_on_command(header_on_update, context)
+    header_on_ok = bool(header_on_message.replies) and "техшапка" in header_on_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /header_on",
+            header_on_ok,
+            header_on_message.replies[0] if header_on_message.replies else "Нет ответа",
+        )
+    )
+
+    header_off_message = FakeMessage()
+    header_off_update = FakeUpdate(effective_user=user, effective_chat=chat, message=header_off_message)
+    await header_off_command(header_off_update, context)
+    header_off_ok = bool(header_off_message.replies) and "техшапка" in header_off_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /header_off",
+            header_off_ok,
+            header_off_message.replies[0] if header_off_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_on_message = FakeMessage()
+    voice_on_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_on_message)
+    await voice_msg_conversation_on_command(voice_on_update, context)
+    voice_on_ok = bool(voice_on_message.replies) and "автоответ" in voice_on_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /voice_msg_conversation_on",
+            voice_on_ok,
+            voice_on_message.replies[0] if voice_on_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_off_message = FakeMessage()
+    voice_off_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_off_message)
+    await voice_msg_conversation_off_command(voice_off_update, context)
+    voice_off_ok = bool(voice_off_message.replies) and "автоответ" in voice_off_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /voice_msg_conversation_off",
+            voice_off_ok,
+            voice_off_message.replies[0] if voice_off_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_debug_on_message = FakeMessage()
+    voice_debug_on_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_debug_on_message)
+    await voice_log_debug_on_command(voice_debug_on_update, context)
+    voice_debug_on_ok = bool(voice_debug_on_message.replies) and "лог" in voice_debug_on_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /voice_log_debug_on",
+            voice_debug_on_ok,
+            voice_debug_on_message.replies[0] if voice_debug_on_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_debug_off_message = FakeMessage()
+    voice_debug_off_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_debug_off_message)
+    await voice_log_debug_off_command(voice_debug_off_update, context)
+    voice_debug_off_ok = bool(voice_debug_off_message.replies) and "лог" in voice_debug_off_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /voice_log_debug_off",
+            voice_debug_off_ok,
+            voice_debug_off_message.replies[0] if voice_debug_off_message.replies else "Нет ответа",
+        )
+    )
+
+    fake_pic_models = (["piapi/test-img"], ["imagerouter/test-img"], ["piapi/test-img", "imagerouter/test-img"])
+    with patch("handlers.commands._refresh_image_models", AsyncMock(return_value=fake_pic_models)):
+        models_pic_message = FakeMessage()
+        models_pic_update = FakeUpdate(effective_user=user, effective_chat=chat, message=models_pic_message)
+        await models_pic_command(models_pic_update, context)
+        models_pic_ok = bool(models_pic_message.replies) and "piapi/test-img" in models_pic_message.replies[0]
+        results.append(
+            (
+                "Команда /models_pic",
+                models_pic_ok,
+                models_pic_message.replies[0] if models_pic_message.replies else "Нет ответа",
+            )
+        )
+
+        set_pic_context = FakeContext(args=["1"])
+        set_pic_message = FakeMessage()
+        set_pic_update = FakeUpdate(effective_user=user, effective_chat=chat, message=set_pic_message)
+        await set_pic_model_command(set_pic_update, set_pic_context)
+        set_pic_ok = bool(set_pic_message.replies) and "установлена" in set_pic_message.replies[0].lower()
+        results.append(
+            (
+                "Команда /set_pic_model",
+                set_pic_ok,
+                set_pic_message.replies[0] if set_pic_message.replies else "Нет ответа",
+            )
+        )
+
+    add_notification_flow("456", "123")
+    flow_message = FakeMessage()
+    flow_update = FakeUpdate(effective_user=user, effective_chat=chat, message=flow_message)
+    await flow_command(flow_update, admin_context)
+    flow_ok = bool(flow_message.replies) and "Discord" in flow_message.replies[0]
+    results.append(
+        (
+            "Команда /flow",
+            flow_ok,
+            flow_message.replies[0] if flow_message.replies else "Нет ответа",
+        )
+    )
+
+    unsetflow_context = FakeContext(user_data={"is_admin": True}, args=["I"])
+    unsetflow_message = FakeMessage()
+    unsetflow_update = FakeUpdate(effective_user=user, effective_chat=chat, message=unsetflow_message)
+    await unsetflow_command(unsetflow_update, unsetflow_context)
+    unsetflow_ok = bool(unsetflow_message.replies)
+    results.append(
+        (
+            "Команда /unsetflow",
+            unsetflow_ok,
+            unsetflow_message.replies[0] if unsetflow_message.replies else "Нет ответа",
         )
     )
 
