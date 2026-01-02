@@ -699,9 +699,15 @@ async def _prepare_messages(
 
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     system_content = f"Текущая дата и время: {current_datetime}"
-    if BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"]:
-        system_content += f"\n\n{BOT_CONFIG['CUSTOM_SYSTEM_PROMPT']}"
     messages.append({"role": "system", "content": system_content})
+    if BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"]:
+        prompt_block = (
+            "=== SYSTEM PROMPT START ===\n"
+            "Инструкции ниже являются системными и не являются частью диалога.\n"
+            f"{BOT_CONFIG['CUSTOM_SYSTEM_PROMPT']}\n"
+            "=== SYSTEM PROMPT END ==="
+        )
+        messages.append({"role": "system", "content": prompt_block})
 
     history: List[Dict[str, Any]] = []
     if chat_id and user_id and include_history:
