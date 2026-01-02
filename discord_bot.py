@@ -58,10 +58,6 @@ BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-voice_prompt_env = os.getenv("VOICE_TRANSCRIBE_PROMPT")
-if voice_prompt_env is not None:
-    BOT_CONFIG["VOICE_TRANSCRIBE_PROMPT"] = voice_prompt_env
-
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")
 if fallback_models_env:
@@ -284,18 +280,38 @@ def _sync_discord_voice_channels() -> None:
             )
 
 
-async def _send_admin_voice_log(text: str) -> None:
+async def _send_admin_voice_log(
+    text: str,
+    audio_files: list[dict[str, str]] | None = None,
+) -> None:
     if not telegram_bot:
         return
     admins = get_all_admins()
     if not admins:
         return
+    audio_files = audio_files or []
     for admin in admins:
         chat_id = admin.get("chat_id")
         if not chat_id:
             continue
         try:
             await telegram_bot.send_message(chat_id=int(chat_id), text=text)
+            for audio in audio_files:
+                path = audio.get("path")
+                if not path or not os.path.exists(path):
+                    continue
+                caption = audio.get("caption")
+                try:
+                    with open(path, "rb") as file_handle:
+                        await telegram_bot.send_document(
+                            chat_id=int(chat_id),
+                            document=file_handle,
+                            caption=caption,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to send voice audio to admin %s: %s", chat_id, exc
+                    )
         except Exception as exc:
             logger.warning("Failed to send voice log to admin %s: %s", chat_id, exc)
 
@@ -317,6 +333,18 @@ def _get_ffmpeg_path() -> str | None:
         if candidate and os.path.exists(candidate):
             return candidate
     return None
+
+
+def _stage_voice_log_audio(src_path: str) -> str | None:
+    try:
+        suffix = Path(src_path).suffix or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            staged_path = tmp_file.name
+        shutil.copy2(src_path, staged_path)
+        return staged_path
+    except Exception as exc:
+        logger.warning("Failed to stage voice log audio %s: %s", src_path, exc)
+        return None
 
 
 async def _convert_voice_log_audio(src_path: str) -> tuple[str, bool, str | None]:
@@ -640,6 +668,7 @@ async def _process_voice_log_sink(
     timeline_entries: list[dict[str, object]] = []
     debug_enabled = get_voice_log_debug()
     debug_lines: list[str] = []
+    pending_audio_files: list[dict[str, str]] = []
 
     def _debug(line: str) -> None:
         if debug_enabled:
@@ -792,6 +821,23 @@ async def _process_voice_log_sink(
                     if len(transcript.strip()) < 3 and (end_sec - start_sec) < 0.6:
                         continue
                     username = username or (member.display_name if member else str(user_id))
+                    if segment_paths:
+                        total_parts = len(segment_paths)
+                        for part_idx, segment_path in enumerate(segment_paths, start=1):
+                            staged_path = _stage_voice_log_audio(segment_path)
+                            if not staged_path:
+                                continue
+                            part_suffix = (
+                                f" part {part_idx}/{total_parts}"
+                                if total_parts > 1
+                                else ""
+                            )
+                            pending_audio_files.append(
+                                {
+                                    "path": staged_path,
+                                    "caption": f"{username}{part_suffix} {start_sec:.1f}-{end_sec:.1f}s",
+                                }
+                            )
                     timeline_entries.append(
                         {
                             "start": start_sec,
@@ -858,22 +904,31 @@ async def _process_voice_log_sink(
             (entry["username"], entry["text"]) for entry in merged_entries
         ]
 
-    if items or debug_lines:
-        message_parts: list[str] = []
-        if items:
-            logger.info(
-                "Voice log collected %d entries for channel %s",
-                len(items),
-                getattr(channel, "id", "unknown"),
-            )
-            message_parts.append(_format_voice_log_lines(channel, items))
-        if debug_enabled and debug_lines:
-            message_parts.append("🧪 Voice log debug:\n" + "\n".join(debug_lines))
-        message_text = "\n\n".join(message_parts)
-        max_len = 3800
-        if len(message_text) > max_len:
-            message_text = message_text[: max_len - 20].rstrip() + "\n…(truncated)"
-        await _send_admin_voice_log(message_text)
+    try:
+        if items or debug_lines:
+            message_parts: list[str] = []
+            if items:
+                logger.info(
+                    "Voice log collected %d entries for channel %s",
+                    len(items),
+                    getattr(channel, "id", "unknown"),
+                )
+                message_parts.append(_format_voice_log_lines(channel, items))
+            if debug_enabled and debug_lines:
+                message_parts.append("🧪 Voice log debug:\n" + "\n".join(debug_lines))
+            message_text = "\n\n".join(message_parts)
+            max_len = 3800
+            if len(message_text) > max_len:
+                message_text = message_text[: max_len - 20].rstrip() + "\n…(truncated)"
+            await _send_admin_voice_log(message_text, audio_files=pending_audio_files)
+    finally:
+        for audio in pending_audio_files:
+            path = audio.get("path")
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    logger.warning("Failed to remove temp file %s", path)
 
 
 async def _voice_log_callback(

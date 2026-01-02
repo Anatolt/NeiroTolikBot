@@ -229,6 +229,9 @@ ADMIN_COMMANDS_TEXT = (
     "• /unsetflow — отключить связь Discord → Telegram\n"
     "• /show_discord_chats — показать голосовые чаты Discord\n"
     "• /show_tg_chats — показать чаты Telegram, где есть бот\n"
+    "• /voice_log_debug_on — включить подробный лог распознавания\n"
+    "• /voice_log_debug_off — отключить подробный лог распознавания\n"
+    "• /selftest — офлайн-проверка слеш-команд (отправляет файл)\n"
     "• /admin_help — показать эту справку\n"
     "\n"
     "Текстовые команды:\n"
@@ -533,7 +536,10 @@ async def flow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     flows = get_notification_flows()
     if not flows:
-        await update.message.reply_text("Связки Discord → Telegram не настроены.")
+        await update.message.reply_text(
+            "Связки Discord → Telegram не настроены.\n"
+            "Подсказка: используйте /setflow, чтобы связать голосовой канал с Telegram-чатом."
+        )
         return
 
     discord_channels = {c["channel_id"]: c for c in get_discord_voice_channels()}
@@ -551,6 +557,7 @@ async def flow_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"{roman}) {discord_guild} / {discord_name} → {telegram_title} ({flow['telegram_chat_id']})"
         )
 
+    lines.append("\nПодсказка: /setflow — добавить связь, /unsetflow — удалить связь.")
     await update.message.reply_text("\n".join(lines))
 
 

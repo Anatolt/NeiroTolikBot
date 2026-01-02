@@ -71,10 +71,6 @@ BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-voice_prompt_env = os.getenv("VOICE_TRANSCRIBE_PROMPT")
-if voice_prompt_env is not None:
-    BOT_CONFIG["VOICE_TRANSCRIBE_PROMPT"] = voice_prompt_env
-
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")
 if fallback_models_env:
