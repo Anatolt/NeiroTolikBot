@@ -12,6 +12,7 @@ from handlers.message_service import (
     execute_routed_request,
     process_message_request,
 )
+from handlers.commands import execute_consilium_request
 from services.memory import get_all_admins, get_voice_auto_reply
 from services.analytics import log_stt_usage
 from services.speech_to_text import estimate_transcription_cost, transcribe_audio, trim_silence
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 YES_VARIANTS = {"yes", "y"}
 PENDING_LLM_ROUTER_KEY = "pending_llm_routes"
 PENDING_VOICE_FILES_KEY = "pending_voice_files"
+PENDING_CONSILIUM_KEY = "pending_consilium_requests"
 
 
 async def _process_voice_transcript(
@@ -170,7 +172,39 @@ async def handle_voice_confirmation(update: Update, context: ContextTypes.DEFAUL
 async def voice_confirmation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await handle_llm_router_confirmation(update, context):
         return
+    if await handle_consilium_confirmation(update, context):
+        return
     await handle_voice_confirmation(update, context)
+
+
+async def handle_consilium_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    message = update.message
+    if not message or not message.text:
+        return False
+
+    normalized = message.text.strip().lower()
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
+
+    if normalized not in YES_VARIANTS:
+        return False
+
+    pending = context.user_data.get(PENDING_CONSILIUM_KEY, {})
+    key = f"{message.chat_id}:{message.from_user.id}"
+    entry = pending.pop(key, None)
+    context.user_data[PENDING_CONSILIUM_KEY] = pending
+
+    if not entry:
+        return False
+
+    prompt = entry.get("prompt", "")
+    models = entry.get("models", [])
+    if not prompt or not models:
+        await message.reply_text("❌ Не удалось подтвердить консилиум: нет данных запроса.")
+        return True
+
+    await execute_consilium_request(update, context, prompt, models)
+    return True
 
 
 async def handle_llm_router_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:

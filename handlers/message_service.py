@@ -7,10 +7,9 @@ from typing import Awaitable, Callable, List, Optional
 from config import BOT_CONFIG
 from handlers.commands import MODELS_HINT_TEXT
 from services.consilium import (
-    extract_prompt_from_consilium_message,
     format_consilium_results,
     generate_consilium_responses,
-    parse_models_from_message,
+    parse_consilium_request,
     select_default_consilium_models,
 )
 from services.analytics import log_image_usage, log_text_usage
@@ -505,7 +504,20 @@ async def execute_routed_request(
         chat_id = str(chat_id)
         user_id = str(user_id)
 
-        models = suggested_models or await parse_models_from_message(content)
+        models, prompt, has_colon = parse_consilium_request(content)
+        if not has_colon:
+            responses.append(
+                MessageResponse(
+                    text=(
+                        "❗ Для консилиума нужен двоеточие после списка моделей.\n"
+                        "Пример: консилиум gpt, claude: ваш вопрос"
+                    )
+                )
+            )
+            return responses
+
+        if suggested_models:
+            models = suggested_models
 
         if not models:
             models = await select_default_consilium_models()
@@ -517,12 +529,10 @@ async def execute_routed_request(
                 )
                 return responses
 
-        prompt = extract_prompt_from_consilium_message(content)
-
         if not prompt:
             responses.append(
                 MessageResponse(
-                    text="❌ Не указан вопрос для консилиума. Используйте: консилиум: ваш вопрос"
+                    text="❌ Не указан вопрос для консилиума. Используйте: консилиум модели: ваш вопрос"
                 )
             )
             return responses

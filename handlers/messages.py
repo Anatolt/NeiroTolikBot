@@ -6,7 +6,8 @@ from telegram.ext import ContextTypes
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from handlers.commands import show_discord_chats_command, show_tg_chats_command
-from handlers.voice_messages import handle_voice_confirmation
+from handlers.voice_messages import handle_voice_confirmation, PENDING_CONSILIUM_KEY
+from services.consilium import parse_consilium_request, select_default_consilium_models
 from services.memory import (
     add_admin,
     get_latest_pending_discord_join_request,
@@ -131,6 +132,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         logger.info(f"Group chat message, extracted text: '{effective_text}'")
+
+    if effective_text.strip().lower().startswith("консилиум"):
+        models, prompt, has_colon = parse_consilium_request(effective_text)
+        if not has_colon:
+            await message.reply_text(
+                "❗ Для консилиума нужен двоеточие после списка моделей.\n"
+                "Пример: консилиум gpt, claude: ваш вопрос"
+            )
+            return
+        if not prompt:
+            await message.reply_text("❌ Не указан вопрос для консилиума. Используйте: консилиум модели: ваш вопрос")
+            return
+        if not models:
+            models = await select_default_consilium_models()
+            if not models:
+                await message.reply_text(
+                    "❌ Не удалось выбрать модели для консилиума. Попробуйте указать модели явно."
+                )
+                return
+
+        pending = context.user_data.get(PENDING_CONSILIUM_KEY, {})
+        key = f"{chat_id}:{user_id}"
+        pending[key] = {"prompt": prompt, "models": models}
+        context.user_data[PENDING_CONSILIUM_KEY] = pending
+
+        models_list = ", ".join(models)
+        await message.reply_text(
+            "🏥 Консилиум готов к запуску.\n"
+            f"Модели: {models_list}\n"
+            f"Вопрос: {prompt}\n"
+            "Нужен ответ? /yes"
+        )
+        return
 
     request = MessageProcessingRequest(
         text=effective_text,

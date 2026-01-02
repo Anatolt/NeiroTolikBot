@@ -12,6 +12,56 @@ from services.generation import (
 )
 
 logger = logging.getLogger(__name__)
+_MODEL_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
+
+
+def _is_model_token(token: str) -> bool:
+    return bool(_MODEL_TOKEN_RE.match(token))
+
+
+def _split_models_and_prompt(remaining: str) -> tuple[List[str], str]:
+    models_part, prompt = remaining.split(":", 1)
+    prompt = prompt.strip()
+    tokens = re.split(r"[,;]\s*|\s+", models_part.strip())
+    models = [t for t in (token.strip() for token in tokens) if t and _is_model_token(t)]
+    return models, prompt
+
+
+def _extract_consilium_remaining(text: str) -> str | None:
+    text_lower = text.lower().strip()
+    if text_lower.startswith("консилиум"):
+        remaining = text[9:].strip()
+    elif text_lower.startswith("/consilium"):
+        remaining = text[10:].strip()
+    else:
+        return None
+
+    if remaining.lower().startswith("через"):
+        remaining = remaining[5:].strip()
+
+    return remaining
+
+
+def parse_consilium_request(text: str) -> tuple[List[str], str, bool]:
+    remaining = _extract_consilium_remaining(text)
+    if remaining is None:
+        return [], "", False
+    if ":" not in remaining:
+        return [], "", False
+
+    models_raw, prompt = _split_models_and_prompt(remaining)
+
+    resolved_models = []
+    for model_keyword in models_raw:
+        resolved = _resolve_user_model_keyword(model_keyword)
+        if resolved:
+            resolved_models.append(resolved)
+        else:
+            # Если не удалось разрешить, используем как есть, чтобы призвать все перечисленные модели.
+            logger.warning(f"Could not resolve model keyword, using as-is: {model_keyword}")
+            resolved_models.append(model_keyword)
+
+    return resolved_models, prompt, True
 
 async def parse_models_from_message(text: str) -> List[str]:
     """
@@ -22,49 +72,10 @@ async def parse_models_from_message(text: str) -> List[str]:
     - "консилиум chatgpt claude" -> ["openai/gpt-4-turbo", "anthropic/claude-3-haiku"]
     - "консилиум: вопрос" -> [] (автоматический выбор)
     """
-    text_lower = text.lower().strip()
-    
-    # Ищем паттерн "консилиум через ..." или "консилиум ..." или "/consilium ..."
-    # Убираем "консилиум" или "/consilium" из начала
-    if text_lower.startswith("консилиум"):
-        remaining = text[9:].strip()  # Убираем "консилиум" (9 символов)
-    elif text_lower.startswith("/consilium"):
-        remaining = text[10:].strip()  # Убираем "/consilium" (10 символов)
-    else:
+    models, _prompt, has_colon = parse_consilium_request(text)
+    if not has_colon:
         return []
-    
-    # Если есть "через", берем текст после него
-    if remaining.lower().startswith("через"):
-        remaining = remaining[5:].strip()  # Убираем "через"
-    
-    # Если после "через" ничего нет или сразу идет двоеточие, возвращаем пустой список
-    if not remaining or remaining.startswith(":"):
-        return []
-    
-    # Извлекаем список моделей до двоеточия (если есть)
-    if ":" in remaining:
-        models_part = remaining.split(":", 1)[0].strip()
-    else:
-        # Если двоеточия нет, пытаемся найти модели в начале
-        # Берем первые слова до пробела или запятой
-        models_part = remaining
-    
-    # Разбиваем на модели по запятой или пробелу
-    models_raw = re.split(r'[,;]\s*|\s+', models_part)
-    models_raw = [m.strip() for m in models_raw if m.strip()]
-    
-    # Разрешаем каждую модель через _resolve_user_model_keyword
-    resolved_models = []
-    for model_keyword in models_raw:
-        resolved = _resolve_user_model_keyword(model_keyword)
-        if resolved:
-            resolved_models.append(resolved)
-        else:
-            # Если не удалось разрешить, пробуем использовать как есть
-            logger.warning(f"Could not resolve model keyword: {model_keyword}")
-            # Можно добавить проверку, что это валидный ID модели
-    
-    return resolved_models
+    return models
 
 
 async def select_default_consilium_models() -> List[str]:
@@ -374,44 +385,7 @@ def extract_prompt_from_consilium_message(text: str) -> str:
     - "консилиум через chatgpt, claude: объясни квантовую физику" -> "объясни квантовую физику"
     - "консилиум chatgpt claude какая погода" -> "какая погода"
     """
-    text_lower = text.lower().strip()
-    
-    if not text_lower.startswith("консилиум") and not text_lower.startswith("/consilium"):
-        return text
-    
-    # Убираем "консилиум" или "/consilium" из начала
-    if text_lower.startswith("консилиум"):
-        remaining = text[9:].strip()  # Убираем "консилиум" (9 символов)
-    else:
-        remaining = text[10:].strip()  # Убираем "/consilium" (10 символов)
-    
-    # Если есть "через", убираем его
-    if remaining.lower().startswith("через"):
-        remaining = remaining[5:].strip()
-    
-    # Если есть двоеточие, берем текст после него
-    if ":" in remaining:
-        return remaining.split(":", 1)[1].strip()
-    
-    # Если нет двоеточия, пытаемся найти промпт после списка моделей
-    # Это сложнее, так как нужно определить, где заканчиваются модели
-    # Для простоты, если нет двоеточия, возвращаем весь текст после "консилиум"
-    # Пользователь должен использовать двоеточие для явного указания промпта
-    
-    # Если в тексте есть известные модели, пытаемся найти промпт после них
-    models_keywords = list(BOT_CONFIG.get("MODELS", {}).keys())
-    words = remaining.split()
-    
-    # Ищем последнее вхождение ключевого слова модели
-    last_model_index = -1
-    for i, word in enumerate(words):
-        if word.lower() in [kw.lower() for kw in models_keywords]:
-            last_model_index = i
-    
-    # Если нашли модели, берем текст после них
-    if last_model_index >= 0:
-        prompt_words = words[last_model_index + 1:]
-        return " ".join(prompt_words).strip()
-    
-    # Если не нашли модели или промпт, возвращаем весь текст
-    return remaining
+    _models, prompt, has_colon = parse_consilium_request(text)
+    if has_colon and prompt:
+        return prompt
+    return ""

@@ -55,6 +55,7 @@ BOT_CONFIG = {
     "VOICE_TRANSCRIBE_MAX_MB": 10,
     "VOICE_TRANSCRIBE_CONFIRM_MB": 5,
     "VOICE_TRANSCRIBE_COST_PER_MIN": 0.006,
+    "VOICE_TRANSCRIBE_PROMPT": "Audio is in Russian or English. Do not transcribe as Arabic, Chinese, or Korean.",
     "VOICE_LOG_ENABLED": True,
     "VOICE_LOG_INTERVAL_SECONDS": 60,
 

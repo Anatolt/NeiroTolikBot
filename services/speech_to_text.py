@@ -95,13 +95,14 @@ async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]
         return None, "OPENAI_API_KEY is not configured"
 
     model_name = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
+    prompt = BOT_CONFIG.get("VOICE_TRANSCRIBE_PROMPT") or ""
 
     try:
         with open(file_path, "rb") as file_handle:
-            result = await client.audio.transcriptions.create(
-                model=model_name,
-                file=file_handle,
-            )
+            request_kwargs = {"model": model_name, "file": file_handle}
+            if prompt:
+                request_kwargs["prompt"] = prompt
+            result = await client.audio.transcriptions.create(**request_kwargs)
         text = result.text.strip() if result and getattr(result, "text", None) else None
         return text, None
     except Exception as exc:
