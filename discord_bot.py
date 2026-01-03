@@ -41,6 +41,7 @@ from services.memory import (
     set_voice_auto_reply,
     upsert_discord_voice_channel,
 )
+from discord_selftest import register_discord_selftest
 from utils.helpers import resolve_system_prompt
 from telegram import Bot
 
@@ -57,6 +58,12 @@ BOT_CONFIG["IMAGE_ROUTER_KEY"] = os.getenv("IMAGE_ROUTER_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+voice_prompt_env = os.getenv("VOICE_TRANSCRIBE_PROMPT")
+if voice_prompt_env is not None:
+    BOT_CONFIG["VOICE_TRANSCRIBE_PROMPT"] = voice_prompt_env
+voice_local_url_env = os.getenv("VOICE_LOCAL_WHISPER_URL")
+if voice_local_url_env is not None:
+    BOT_CONFIG["VOICE_LOCAL_WHISPER_URL"] = voice_local_url_env
 
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")
@@ -77,6 +84,7 @@ bot = commands.Bot(
     intents=intents,
     help_command=None,
 )
+register_discord_selftest(bot)
 telegram_bot = Bot(BOT_CONFIG["TELEGRAM_BOT_TOKEN"]) if BOT_CONFIG.get("TELEGRAM_BOT_TOKEN") else None
 _join_request_task: asyncio.Task | None = None
 _voice_disconnect_tasks: dict[int, asyncio.Task] = {}
