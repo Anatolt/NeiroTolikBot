@@ -19,6 +19,7 @@ from services.memory import (
     get_voice_log_debug,
     get_voice_log_model,
     get_voice_model,
+    get_voice_transcribe_mode,
     is_admin,
     add_notification_flow,
     remove_notification_flow,
@@ -29,6 +30,7 @@ from services.memory import (
     set_voice_log_debug,
     set_voice_log_model,
     set_voice_model,
+    set_voice_transcribe_mode,
     set_preferred_model,
 )
 from services.generation import (
@@ -237,6 +239,8 @@ ADMIN_COMMANDS_TEXT = (
     "🎙️ Голосовые модели:\n"
     "• /models_voice — список моделей распознавания\n"
     "• /set_voice_model <номер> — выбрать модель распознавания\n"
+    "• /voice_send_raw — слать аудио без нарезки (дороже)\n"
+    "• /voice_send_segmented — слать аудио с нарезкой\n"
     "\n"
     "Текстовые команды:\n"
     "• покажи чаты дискорд\n"
@@ -819,6 +823,32 @@ async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(
         f"✅ Модель распознавания речи установлена: {selected}\n"
         "Также обновил модель для голосовых логов."
+    )
+
+
+async def voice_send_raw_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает отправку аудио в STT без нарезки."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    set_voice_transcribe_mode("raw")
+    await update.message.reply_text(
+        "✅ Режим отправки аудио: raw (без нарезки).\n"
+        "Это дороже. Переключить: /voice_send_segmented"
+    )
+
+
+async def voice_send_segmented_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает отправку аудио в STT с нарезкой."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    set_voice_transcribe_mode("segmented")
+    await update.message.reply_text(
+        "✅ Режим отправки аудио: segmented (с нарезкой).\n"
+        "Переключить: /voice_send_raw"
     )
 
 

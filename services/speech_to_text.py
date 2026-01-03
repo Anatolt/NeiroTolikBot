@@ -90,6 +90,16 @@ def _get_client() -> Optional[AsyncOpenAI]:
 
 
 async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        size_bytes = os.path.getsize(file_path)
+    except OSError:
+        size_bytes = None
+    hard_max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_HARD_MAX_MB", 25)
+    if size_bytes is not None:
+        hard_max_bytes = int(hard_max_mb * 1024 * 1024)
+        if size_bytes > hard_max_bytes:
+            return None, f"Audio file exceeds {hard_max_mb}MB limit"
+
     model_name = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
     if model_name == "local-whisper":
         return await _transcribe_local_whisper(file_path)

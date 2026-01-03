@@ -72,6 +72,8 @@ from handlers.commands import (
     setflow_command,
     set_voice_log_model_command,
     set_voice_model_command,
+    voice_send_raw_command,
+    voice_send_segmented_command,
     show_discord_chats_command,
     show_tg_chats_command,
     start,
@@ -491,6 +493,32 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
             "Команда /voice_log_debug_off",
             voice_debug_off_ok,
             voice_debug_off_message.replies[0] if voice_debug_off_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_send_raw_message = FakeMessage()
+    voice_send_raw_update = FakeUpdate(effective_user=user, effective_chat=chat, message=voice_send_raw_message)
+    await voice_send_raw_command(voice_send_raw_update, admin_context)
+    voice_send_raw_ok = bool(voice_send_raw_message.replies) and "raw" in voice_send_raw_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /voice_send_raw",
+            voice_send_raw_ok,
+            voice_send_raw_message.replies[0] if voice_send_raw_message.replies else "Нет ответа",
+        )
+    )
+
+    voice_send_segmented_message = FakeMessage()
+    voice_send_segmented_update = FakeUpdate(
+        effective_user=user, effective_chat=chat, message=voice_send_segmented_message
+    )
+    await voice_send_segmented_command(voice_send_segmented_update, admin_context)
+    voice_send_segmented_ok = bool(voice_send_segmented_message.replies) and "segmented" in voice_send_segmented_message.replies[0].lower()
+    results.append(
+        (
+            "Команда /voice_send_segmented",
+            voice_send_segmented_ok,
+            voice_send_segmented_message.replies[0] if voice_send_segmented_message.replies else "Нет ответа",
         )
     )
 

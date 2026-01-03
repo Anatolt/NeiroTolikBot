@@ -570,6 +570,40 @@ def get_voice_model() -> Optional[str]:
     return result[0] if result else None
 
 
+def set_voice_transcribe_mode(mode: str) -> None:
+    """Сохраняет режим отправки аудио в STT (raw или segmented)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        ("voice_transcribe_mode", mode, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_voice_transcribe_mode() -> Optional[str]:
+    """Возвращает режим отправки аудио в STT (raw или segmented)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        ("voice_transcribe_mode",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result else None
+
+
 def set_voice_log_model(model: str) -> None:
     """Сохраняет модель распознавания для голосовых логов."""
     conn = sqlite3.connect(DB_PATH)

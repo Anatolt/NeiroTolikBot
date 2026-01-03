@@ -19,6 +19,7 @@ from services.memory import (
     get_voice_log_debug,
     get_voice_log_model,
     get_voice_model,
+    get_voice_transcribe_mode,
 )
 from services.speech_to_text import transcribe_audio
 
@@ -475,18 +476,41 @@ async def process_voice_log_sink(
                 _debug(f"{debug_prefix} skip=non_wav")
                 continue
 
+            voice_model = (
+                get_voice_log_model()
+                or get_voice_model()
+                or BOT_CONFIG.get("VOICE_MODEL")
+                or "whisper-1"
+            )
+            stored_mode = (get_voice_transcribe_mode() or "").lower()
+            if stored_mode not in {"raw", "segmented"}:
+                send_mode = "raw" if voice_model == "local-whisper" else "segmented"
+            else:
+                send_mode = stored_mode
+
             segments, seg_stats = _detect_speech_segments(tmp_path)
-            if not segments:
-                _debug(
-                    f"{debug_prefix} skip=no_speech stats={seg_stats}"
-                )
+            if send_mode == "raw":
                 rate = float(seg_stats.get("rate", 0) or 0)
                 frames = float(seg_stats.get("frames", 0) or 0)
-                if rate > 0 and frames > 0:
-                    segments = [(0.0, frames / rate)]
-                else:
+                duration = frames / rate if rate > 0 and frames > 0 else 0.0
+                if duration <= 0:
+                    _debug(f"{debug_prefix} skip=raw_no_duration stats={seg_stats}")
                     continue
-            segments = _split_long_segments(segments)
+                segments = [(0.0, duration)]
+                _debug(f"{debug_prefix} send_mode=raw duration={duration:.2f}")
+            else:
+                if not segments:
+                    _debug(
+                        f"{debug_prefix} skip=no_speech stats={seg_stats}"
+                    )
+                    rate = float(seg_stats.get("rate", 0) or 0)
+                    frames = float(seg_stats.get("frames", 0) or 0)
+                    if rate > 0 and frames > 0:
+                        segments = [(0.0, frames / rate)]
+                    else:
+                        continue
+                segments = _split_long_segments(segments)
+                _debug(f"{debug_prefix} send_mode=segmented segments={len(segments)}")
 
             for seg_idx, (start_sec, end_sec) in enumerate(segments, start=1):
                 segment_wav = _extract_wav_segment(tmp_path, start_sec, end_sec)
@@ -500,49 +524,60 @@ async def process_voice_log_sink(
                 segment_dir = None
                 segment_paths: list[str] = []
                 try:
-                    audio_path, converted, convert_error = await _convert_voice_log_audio(segment_wav)
-                    if converted:
-                        converted_path = audio_path
-                        _debug(f"{debug_prefix} seg{seg_idx} converted=mp3")
-                    elif convert_error:
-                        _debug(f"{debug_prefix} seg{seg_idx} convert_error={convert_error}")
-
-                    size_bytes = os.path.getsize(audio_path)
-                    max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
-                    max_bytes = int(max_mb * 1024 * 1024)
-                    if size_bytes > max_bytes:
-                        segment_paths, segment_dir, split_error = await _split_voice_log_audio(audio_path)
-                        if len(segment_paths) == 1:
+                    if send_mode == "raw":
+                        audio_path = segment_wav
+                        size_bytes = os.path.getsize(audio_path)
+                        hard_max = int(BOT_CONFIG.get("VOICE_TRANSCRIBE_HARD_MAX_MB", 25) * 1024 * 1024)
+                        if size_bytes > hard_max:
                             logger.info(
-                                "Skipping audio over limit for user %s (%s bytes)",
+                                "Skipping raw audio over limit for user %s (%s bytes)",
                                 user_id,
                                 size_bytes,
                             )
-                            if split_error:
-                                _debug(
-                                    f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes} split_error={split_error}"
-                                )
-                            else:
-                                _debug(
-                                    f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes}"
-                                )
+                            _debug(
+                                f"{debug_prefix} seg{seg_idx} skip=raw_over_limit size={size_bytes}"
+                            )
                             continue
-                        _debug(
-                            f"{debug_prefix} seg{seg_idx} split_segments={len(segment_paths)} size={size_bytes}"
-                        )
-                    else:
                         segment_paths = [audio_path]
-                    if size_bytes < 256:
-                        logger.info("Skipping too small audio for user %s (%s bytes)", user_id, size_bytes)
-                        _debug(f"{debug_prefix} seg{seg_idx} skip=too_small size={size_bytes}")
-                        continue
+                    else:
+                        audio_path, converted, convert_error = await _convert_voice_log_audio(segment_wav)
+                        if converted:
+                            converted_path = audio_path
+                            _debug(f"{debug_prefix} seg{seg_idx} converted=mp3")
+                        elif convert_error:
+                            _debug(f"{debug_prefix} seg{seg_idx} convert_error={convert_error}")
 
-                    voice_model = (
-                        get_voice_log_model()
-                        or get_voice_model()
-                        or BOT_CONFIG.get("VOICE_MODEL")
-                        or "whisper-1"
-                    )
+                        size_bytes = os.path.getsize(audio_path)
+                        max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_MAX_MB", 10)
+                        hard_max_mb = BOT_CONFIG.get("VOICE_TRANSCRIBE_HARD_MAX_MB", 25)
+                        max_bytes = int(min(max_mb, hard_max_mb) * 1024 * 1024)
+                        if size_bytes > max_bytes:
+                            segment_paths, segment_dir, split_error = await _split_voice_log_audio(audio_path)
+                            if len(segment_paths) == 1:
+                                logger.info(
+                                    "Skipping audio over limit for user %s (%s bytes)",
+                                    user_id,
+                                    size_bytes,
+                                )
+                                if split_error:
+                                    _debug(
+                                        f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes} split_error={split_error}"
+                                    )
+                                else:
+                                    _debug(
+                                        f"{debug_prefix} seg{seg_idx} skip=over_limit size={size_bytes}"
+                                    )
+                                continue
+                            _debug(
+                                f"{debug_prefix} seg{seg_idx} split_segments={len(segment_paths)} size={size_bytes}"
+                            )
+                        else:
+                            segment_paths = [audio_path]
+                        if size_bytes < 256:
+                            logger.info("Skipping too small audio for user %s (%s bytes)", user_id, size_bytes)
+                            _debug(f"{debug_prefix} seg{seg_idx} skip=too_small size={size_bytes}")
+                            continue
+
                     _debug(
                         f"{debug_prefix} seg{seg_idx} stt_model={voice_model} size={size_bytes} start={start_sec:.2f} end={end_sec:.2f}"
                     )

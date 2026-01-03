@@ -43,6 +43,8 @@ from handlers.commands import (
     voice_msg_conversation_on_command,
     voice_log_debug_off_command,
     voice_log_debug_on_command,
+    voice_send_raw_command,
+    voice_send_segmented_command,
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
@@ -178,6 +180,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("voice_msg_conversation_off", voice_msg_conversation_off_command))
     application.add_handler(CommandHandler("voice_log_debug_on", voice_log_debug_on_command))
     application.add_handler(CommandHandler("voice_log_debug_off", voice_log_debug_off_command))
+    application.add_handler(CommandHandler("voice_send_raw", voice_send_raw_command))
+    application.add_handler(CommandHandler("voice_send_segmented", voice_send_segmented_command))
     application.add_handler(CommandHandler("yes", voice_confirmation_command))
     application.add_handler(CommandHandler("y", voice_confirmation_command))
     application.add_handler(CommandHandler("setflow", setflow_command))
