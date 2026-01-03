@@ -234,6 +234,10 @@ ADMIN_COMMANDS_TEXT = (
     "• /selftest — офлайн-проверка слеш-команд (отправляет файл)\n"
     "• /admin_help — показать эту справку\n"
     "\n"
+    "🎙️ Голосовые модели:\n"
+    "• /models_voice — список моделей распознавания\n"
+    "• /set_voice_model <номер> — выбрать модель распознавания\n"
+    "\n"
     "Текстовые команды:\n"
     "• покажи чаты дискорд\n"
     "• покажи чаты тг"
@@ -798,7 +802,10 @@ async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_
 
     args = context.args or []
     if not args or not args[0].isdigit():
-        await update.message.reply_text("Использование: /set_voice_model <номер>")
+        lines = ["Использование: /set_voice_model <номер>", "", "Доступные модели:"]
+        for idx, model in enumerate(voice_models, start=1):
+            lines.append(f"{idx}) {model}")
+        await update.message.reply_text("\n".join(lines))
         return
 
     index = int(args[0])
