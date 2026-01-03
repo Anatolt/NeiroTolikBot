@@ -815,7 +815,11 @@ async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_
 
     selected = voice_models[index - 1]
     set_voice_model(selected)
-    await update.message.reply_text(f"✅ Модель распознавания речи установлена: {selected}")
+    set_voice_log_model(selected)
+    await update.message.reply_text(
+        f"✅ Модель распознавания речи установлена: {selected}\n"
+        "Также обновил модель для голосовых логов."
+    )
 
 
 async def set_voice_log_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

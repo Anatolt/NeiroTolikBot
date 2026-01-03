@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 from typing import Optional, Tuple
 
+import aiohttp
 from openai import AsyncOpenAI
 
 from config import BOT_CONFIG
@@ -89,12 +90,14 @@ def _get_client() -> Optional[AsyncOpenAI]:
 
 
 async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]]:
+    model_name = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
+    if model_name == "local-whisper":
+        return await _transcribe_local_whisper(file_path)
+
     client = _get_client()
     if client is None:
         logger.warning("OPENAI_API_KEY is not configured; skipping transcription.")
         return None, "OPENAI_API_KEY is not configured"
-
-    model_name = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
 
     try:
         with open(file_path, "rb") as file_handle:
@@ -106,4 +109,38 @@ async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]
         return text, None
     except Exception as exc:
         logger.warning("Failed to transcribe audio: %s", exc)
+        return None, f"{exc}"
+
+
+async def _transcribe_local_whisper(file_path: str) -> Tuple[Optional[str], Optional[str]]:
+    url = BOT_CONFIG.get("VOICE_LOCAL_WHISPER_URL")
+    if not url:
+        return None, "VOICE_LOCAL_WHISPER_URL is not configured"
+
+    try:
+        form = aiohttp.FormData()
+        with open(file_path, "rb") as file_handle:
+            form.add_field(
+                "file",
+                file_handle,
+                filename=os.path.basename(file_path),
+                content_type="application/octet-stream",
+            )
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, data=form) as response:
+                    raw_text = await response.text()
+                    if response.status >= 400:
+                        return None, f"Local whisper error {response.status}: {raw_text}"
+                    try:
+                        payload = await response.json(content_type=None)
+                    except Exception:
+                        payload = None
+                    if isinstance(payload, dict):
+                        text = payload.get("text") or payload.get("transcript") or payload.get("result")
+                        if text:
+                            return text.strip(), None
+                    return raw_text.strip(), None
+    except Exception as exc:
+        logger.warning("Failed to transcribe audio via local whisper: %s", exc)
         return None, f"{exc}"

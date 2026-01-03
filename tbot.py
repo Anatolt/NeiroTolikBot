@@ -70,6 +70,12 @@ BOT_CONFIG["IMAGE_ROUTER_KEY"] = os.getenv("IMAGE_ROUTER_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+voice_prompt_env = os.getenv("VOICE_TRANSCRIBE_PROMPT")
+if voice_prompt_env is not None:
+    BOT_CONFIG["VOICE_TRANSCRIBE_PROMPT"] = voice_prompt_env
+voice_local_url_env = os.getenv("VOICE_LOCAL_WHISPER_URL")
+if voice_local_url_env is not None:
+    BOT_CONFIG["VOICE_LOCAL_WHISPER_URL"] = voice_local_url_env
 
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")

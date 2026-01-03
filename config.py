@@ -50,11 +50,13 @@ BOT_CONFIG = {
         "whisper-1",
         "gpt-4o-mini-transcribe",
         "gpt-4o-transcribe",
+        "local-whisper",
     ],
     "VOICE_MODEL": "whisper-1",
     "VOICE_TRANSCRIBE_MAX_MB": 10,
     "VOICE_TRANSCRIBE_CONFIRM_MB": 5,
     "VOICE_TRANSCRIBE_COST_PER_MIN": 0.006,
+    "VOICE_LOCAL_WHISPER_URL": "http://127.0.0.1:8000/transcribe",
     "VOICE_LOG_ENABLED": True,
     "VOICE_LOG_INTERVAL_SECONDS": 10,
 
