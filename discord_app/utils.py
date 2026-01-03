@@ -1,0 +1,107 @@
+import re
+
+import discord
+
+from config import BOT_CONFIG
+
+
+def extract_discord_channel_link(text: str) -> tuple[str, str] | None:
+    match = re.search(r"https?://(?:www\.)?discord\.com/channels/(\d+)/(\d+)", text)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def extract_discord_invite_link(text: str) -> str | None:
+    match = re.search(
+        r"https?://(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/([A-Za-z0-9-]+)",
+        text,
+    )
+    if not match:
+        return None
+    return match.group(1)
+
+
+def build_start_message(display_name: str | None) -> str:
+    user = display_name or "там"
+    default_model = BOT_CONFIG["DEFAULT_MODEL"]
+    return (
+        f"Привет, {user}! Я бот-помощник.\n\n"
+        f"📝 Спроси меня что-нибудь — отвечу через {default_model}.\n"
+        "🎨 Попроси нарисовать картинку (например, 'нарисуй закат над морем').\n"
+        "🤖 Хочешь другую модель? Укажи ее в начале или конце запроса (например, 'chatgpt какой сегодня день?').\n"
+        "❓ Команды и помощь: /help"
+    )
+
+
+def build_discord_help_message() -> str:
+    return (
+        "Команды Discord-бота:\n"
+        "• /start — краткое приветствие\n"
+        "• /help — справка по командам\n"
+        "• /join — подключиться к голосовому каналу, где вы сейчас\n"
+        "• /leave — выйти из голосового канала\n"
+        "• /autojoin_on — включить автоподключение к голосу\n"
+        "• /autojoin_off — отключить автоподключение к голосу\n\n"
+        "В серверах бот отвечает по упоминанию @ИмяБота или с префиксами !/.\n"
+        "В личных сообщениях отвечает на любой текст."
+    )
+
+
+def strip_bot_mention(content: str, bot_user: discord.User | discord.ClientUser | None) -> str:
+    if not bot_user:
+        return content
+
+    cleaned = content
+    mention_variants = [f"<@{bot_user.id}>", f"<@!{bot_user.id}>", f"@{bot_user.name}"]
+    for mention in mention_variants:
+        cleaned = cleaned.replace(mention, "")
+    return cleaned.strip()
+
+
+def format_cost_estimate(cost: float | None) -> str:
+    if cost is None:
+        return "неизвестно"
+    return f"${cost:.4f}"
+
+
+def count_humans_in_voice(
+    channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
+) -> int:
+    guild = getattr(channel, "guild", None)
+    if guild:
+        count = 0
+        voice_states = getattr(guild, "voice_states", None)
+        if voice_states is None:
+            voice_states = getattr(guild, "_voice_states", None)
+        if not voice_states:
+            voice_states = {}
+        for member_id, voice_state in voice_states.items():
+            if not voice_state or not voice_state.channel:
+                continue
+            if voice_state.channel.id != channel.id:
+                continue
+            if exclude_member_id is not None and member_id == exclude_member_id:
+                continue
+            member = guild.get_member(member_id)
+            if member and member.bot:
+                continue
+            count += 1
+        return count
+    members = getattr(channel, "members", None) or []
+    return sum(
+        1
+        for member in members
+        if not member.bot and (exclude_member_id is None or member.id != exclude_member_id)
+    )
+
+
+def pick_announcement_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    channel = guild.system_channel
+    if channel and channel.permissions_for(guild.me).send_messages:  # type: ignore[arg-type]
+        return channel
+
+    for text_channel in guild.text_channels:
+        if text_channel.permissions_for(guild.me).send_messages:  # type: ignore[arg-type]
+            return text_channel
+    return None
