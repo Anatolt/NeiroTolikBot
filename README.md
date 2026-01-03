@@ -115,7 +115,7 @@ NeiroTolikBot/
 - Telegram голосовые распознаются через OpenAI Whisper (нужен `OPENAI_API_KEY`).
 - В Discord можно присылать аудио-вложения (.ogg/.mp3/.wav/.m4a) — бот распознает и отвечает.
 - Для локального Whisper можно указать `VOICE_LOCAL_WHISPER_URL` (по умолчанию `http://127.0.0.1:8000/transcribe`).
-- Режимы отправки в STT: `raw` (без нарезки) и `segmented` (с нарезкой). Переключаются командами `/voice_send_raw` и `/voice_send_segmented`.
+- Режимы отправки в STT: `raw` (целый файл) и `segmented` (кусочки по паузам речи). Переключаются командами `/voice_send_raw` и `/voice_send_segmented`.
 - Жёсткий лимит файла для STT: 25 MB.
 
 Приглашение Discord-бота:
@@ -127,8 +127,8 @@ NeiroTolikBot/
 - `/unsetflow` — удалить связь (без аргументов покажет список с римскими цифрами; пример: `/unsetflow ii`)
 - `/models_voice` — список моделей распознавания речи
 - `/set_voice_model <номер>` — выбрать модель распознавания речи
-- `/voice_send_raw` — слать аудио без нарезки (дороже, лимит 25MB)
-- `/voice_send_segmented` — слать аудио с нарезкой (лимит 25MB)
+- `/voice_send_raw` — слать аудио целиком, без нарезки (дороже, лимит 25MB)
+- `/voice_send_segmented` — слать аудио кусками по паузам речи (лимит 25MB)
 
 ### Запуск как systemd-сервис
 

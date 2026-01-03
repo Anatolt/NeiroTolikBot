@@ -150,7 +150,10 @@ async def _transcribe_local_whisper(file_path: str) -> Tuple[Optional[str], Opti
                         text = payload.get("text") or payload.get("transcript") or payload.get("result")
                         if text:
                             return text.strip(), None
-                    return raw_text.strip(), None
+                    raw_text = raw_text.strip()
+                    if raw_text:
+                        return raw_text, None
+                    return None, "Local whisper returned empty response"
     except Exception as exc:
         logger.warning("Failed to transcribe audio via local whisper: %s", exc)
         return None, f"{exc}"

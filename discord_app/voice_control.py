@@ -25,9 +25,18 @@ async def connect_voice_channel(
 ) -> discord.VoiceClient | None:
     voice_client = channel.guild.voice_client
     if voice_client and voice_client.is_connected():
-        await voice_client.move_to(channel)
-    else:
+        if voice_client.channel and voice_client.channel.id != channel.id:
+            await voice_client.move_to(channel)
+        return voice_client
+
+    try:
         voice_client = await channel.connect()
+    except discord.ClientException as exc:
+        existing = channel.guild.voice_client
+        if existing and existing.is_connected():
+            return existing
+        logger.warning("Voice connect failed: %s", exc)
+        return None
 
     try:
         await channel.guild.change_voice_state(channel=channel, self_deaf=False, self_mute=False)

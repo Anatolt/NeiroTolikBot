@@ -41,8 +41,10 @@ def register_commands(bot: commands.Bot) -> None:
             return
 
         voice_client = await connect_voice_channel(channel)
-        if voice_client:
-            ensure_voice_log_task(voice_client)
+        if not voice_client:
+            await ctx.send("Не удалось подключиться к голосовому каналу.")
+            return
+        ensure_voice_log_task(voice_client)
         set_last_voice_channel(str(ctx.guild.id), str(channel.id))
         await ctx.send(f"Подключился к «{channel.name}».")
 
@@ -65,8 +67,10 @@ def register_commands(bot: commands.Bot) -> None:
                 return
 
             voice_client = await connect_voice_channel(channel)
-            if voice_client:
-                ensure_voice_log_task(voice_client)
+            if not voice_client:
+                await ctx.respond("Не удалось подключиться к голосовому каналу.")
+                return
+            ensure_voice_log_task(voice_client)
             set_last_voice_channel(str(ctx.guild.id), str(channel.id))
             await ctx.respond(f"Подключился к «{channel.name}».")
 
