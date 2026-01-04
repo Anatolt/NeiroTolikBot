@@ -45,6 +45,7 @@ from handlers.commands import (
     voice_log_debug_on_command,
     voice_send_raw_command,
     voice_send_segmented_command,
+    say_command,
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
@@ -78,6 +79,12 @@ if voice_prompt_env is not None:
 voice_local_url_env = os.getenv("VOICE_LOCAL_WHISPER_URL")
 if voice_local_url_env is not None:
     BOT_CONFIG["VOICE_LOCAL_WHISPER_URL"] = voice_local_url_env
+tts_model_env = os.getenv("TTS_MODEL")
+if tts_model_env is not None:
+    BOT_CONFIG["TTS_MODEL"] = tts_model_env
+tts_voice_env = os.getenv("TTS_VOICE")
+if tts_voice_env is not None:
+    BOT_CONFIG["TTS_VOICE"] = tts_voice_env
 
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")
@@ -182,6 +189,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("voice_log_debug_off", voice_log_debug_off_command))
     application.add_handler(CommandHandler("voice_send_raw", voice_send_raw_command))
     application.add_handler(CommandHandler("voice_send_segmented", voice_send_segmented_command))
+    application.add_handler(CommandHandler("say", say_command))
     application.add_handler(CommandHandler("yes", voice_confirmation_command))
     application.add_handler(CommandHandler("y", voice_confirmation_command))
     application.add_handler(CommandHandler("setflow", setflow_command))

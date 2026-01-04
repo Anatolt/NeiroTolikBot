@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import os
+import shutil
 
 import discord
 from discord.ext import commands
@@ -6,9 +9,17 @@ from discord.ext import commands
 from discord_app.utils import build_discord_help_message, build_start_message
 from discord_app.voice_control import connect_voice_channel
 from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task
+from services.tts import synthesize_speech
 from services.memory import set_discord_autojoin, set_discord_autojoin_announce_sent, set_last_voice_channel, set_voice_auto_reply
 
 logger = logging.getLogger(__name__)
+
+
+def _get_ffmpeg_path() -> str | None:
+    for candidate in (shutil.which("ffmpeg"), "/usr/bin/ffmpeg", "/bin/ffmpeg"):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
 
 
 def register_commands(bot: commands.Bot) -> None:
@@ -24,6 +35,74 @@ def register_commands(bot: commands.Bot) -> None:
         @bot.slash_command(name="help", description="Справка по командам бота")
         async def help_slash(ctx: discord.ApplicationContext) -> None:
             await ctx.respond(build_discord_help_message())
+
+    async def _reply_ctx(
+        ctx: commands.Context | discord.ApplicationContext,
+        text: str,
+        responded: bool,
+    ) -> bool:
+        if hasattr(ctx, "respond"):
+            if responded:
+                await ctx.followup.send(text)
+            else:
+                await ctx.respond(text)
+                responded = True
+        else:
+            await ctx.send(text)
+        return responded
+
+    async def _play_tts_audio(
+        ctx: commands.Context | discord.ApplicationContext,
+        text: str,
+    ) -> None:
+        responded = False
+
+        if not ctx.guild:
+            await _reply_ctx(ctx, "Команда доступна только на сервере.", responded)
+            return
+
+        voice_state = getattr(ctx.author, "voice", None)
+        if not voice_state or not voice_state.channel:
+            await _reply_ctx(ctx, "Сначала зайди в голосовой канал.", responded)
+            return
+
+        ffmpeg_path = _get_ffmpeg_path()
+        if not ffmpeg_path:
+            await _reply_ctx(ctx, "ffmpeg не найден, TTS недоступен.", responded)
+            return
+
+        voice_client = await connect_voice_channel(voice_state.channel)
+        if not voice_client:
+            await _reply_ctx(ctx, "Не удалось подключиться к голосовому каналу.", responded)
+            return
+
+        responded = await _reply_ctx(ctx, "🗣️ Озвучиваю...", responded)
+
+        audio_path, error = await synthesize_speech(text)
+        if error or not audio_path:
+            await _reply_ctx(ctx, f"Ошибка TTS: {error}", responded)
+            return
+
+        done = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _after_playback(err: Exception | None) -> None:
+            if err:
+                logger.warning("TTS playback error: %s", err)
+            loop.call_soon_threadsafe(done.set)
+
+        try:
+            if voice_client.is_playing() or voice_client.is_paused():
+                voice_client.stop()
+            source = discord.FFmpegPCMAudio(audio_path, executable=ffmpeg_path)
+            voice_client.play(source, after=_after_playback)
+            await done.wait()
+        finally:
+            if os.path.exists(audio_path):
+                try:
+                    os.unlink(audio_path)
+                except OSError:
+                    logger.warning("Failed to remove temp file %s", audio_path)
 
     @bot.command(name="join")
     async def join_voice_command(ctx: commands.Context) -> None:
@@ -106,6 +185,19 @@ def register_commands(bot: commands.Bot) -> None:
             if ctx.guild:
                 set_last_voice_channel(str(ctx.guild.id), None)
             await ctx.respond("Отключился от голосового канала.")
+
+    @bot.command(name="say")
+    async def say_voice_command(ctx: commands.Context, *, text: str | None = None) -> None:
+        """Озвучить текст в голосовом канале пользователя."""
+        if not text:
+            await ctx.send("Использование: /say <текст>")
+            return
+        await _play_tts_audio(ctx, text)
+
+    if hasattr(bot, "slash_command"):
+        @bot.slash_command(name="say", description="Озвучить текст в голосовом канале")
+        async def say_voice_slash(ctx: discord.ApplicationContext, text: str) -> None:
+            await _play_tts_audio(ctx, text)
 
     @bot.command(name="autojoin_on")
     async def autojoin_on_command(ctx: commands.Context) -> None:

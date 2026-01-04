@@ -42,6 +42,12 @@ if voice_prompt_env is not None:
 voice_local_url_env = os.getenv("VOICE_LOCAL_WHISPER_URL")
 if voice_local_url_env is not None:
     BOT_CONFIG["VOICE_LOCAL_WHISPER_URL"] = voice_local_url_env
+tts_model_env = os.getenv("TTS_MODEL")
+if tts_model_env is not None:
+    BOT_CONFIG["TTS_MODEL"] = tts_model_env
+tts_voice_env = os.getenv("TTS_VOICE")
+if tts_voice_env is not None:
+    BOT_CONFIG["TTS_VOICE"] = tts_voice_env
 
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")

@@ -1,5 +1,10 @@
 import logging
 import time
+import os
+import shutil
+import subprocess
+import tempfile
+import asyncio
 from io import BytesIO
 from typing import Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -47,6 +52,7 @@ from services.consilium import (
     generate_consilium_responses,
     format_consilium_results,
 )
+from services.tts import synthesize_speech
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +230,48 @@ def _build_free_models_markup(page: int, total_pages: int) -> InlineKeyboardMark
     ]
     return InlineKeyboardMarkup(keyboard)
 
+
+def _get_ffmpeg_path() -> str | None:
+    for candidate in (shutil.which("ffmpeg"), "/usr/bin/ffmpeg", "/bin/ffmpeg"):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+async def _convert_tts_to_ogg(src_path: str) -> tuple[str | None, str | None]:
+    ffmpeg_path = _get_ffmpeg_path()
+    if not ffmpeg_path:
+        return None, "ffmpeg_missing"
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
+            dst_path = tmp_file.name
+
+        cmd = [
+            ffmpeg_path,
+            "-y",
+            "-i",
+            src_path,
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-c:a",
+            "libopus",
+            dst_path,
+        ]
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            try:
+                os.unlink(dst_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", dst_path)
+            return None, result.stderr.strip() or "convert_failed"
+        return dst_path, None
+    except Exception as exc:
+        logger.warning("Failed to convert TTS audio: %s", exc)
+        return None, str(exc)
+
 ADMIN_COMMANDS_TEXT = (
     "👑 Команды администратора:\n"
     "• /flow — показать текущие связи Discord → Telegram\n"
@@ -233,6 +281,7 @@ ADMIN_COMMANDS_TEXT = (
     "• /show_tg_chats — показать чаты Telegram, где есть бот\n"
     "• /voice_log_debug_on — включить подробный лог распознавания\n"
     "• /voice_log_debug_off — отключить подробный лог распознавания\n"
+    "• /say — озвучить текст голосом в Telegram\n"
     "• /selftest — офлайн-проверка слеш-команд (отправляет файл)\n"
     "• /admin_help — показать эту справку\n"
     "\n"
@@ -850,6 +899,47 @@ async def voice_send_segmented_command(update: Update, context: ContextTypes.DEF
         "✅ Режим отправки аудио: segmented (с нарезкой).\n"
         "Переключить: /voice_send_raw"
     )
+
+
+async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Озвучивает текст голосом (TTS) и отправляет голосовое сообщение."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    message = update.message
+    if not message:
+        return
+
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await message.reply_text("Использование: /say <текст>")
+        return
+
+    await message.reply_text("🗣️ Озвучиваю...")
+
+    audio_path = None
+    ogg_path = None
+    try:
+        audio_path, error = await synthesize_speech(text)
+        if error or not audio_path:
+            await message.reply_text(f"Ошибка TTS: {error}")
+            return
+
+        ogg_path, convert_error = await _convert_tts_to_ogg(audio_path)
+        if not ogg_path:
+            await message.reply_text(f"Ошибка конвертации: {convert_error}")
+            return
+
+        with open(ogg_path, "rb") as voice_handle:
+            await message.reply_voice(voice=voice_handle)
+    finally:
+        for path in (audio_path, ogg_path):
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    logger.warning("Failed to remove temp file %s", path)
 
 
 async def set_voice_log_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

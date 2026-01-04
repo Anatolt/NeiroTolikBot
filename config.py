@@ -60,6 +60,10 @@ BOT_CONFIG = {
     "VOICE_LOCAL_WHISPER_URL": "http://127.0.0.1:8000/transcribe",
     "VOICE_LOG_ENABLED": True,
     "VOICE_LOG_INTERVAL_SECONDS": 10,
+    "VOICE_LOG_MAX_SEGMENT_SECONDS": 60,
+    "VOICE_LOG_PAUSE_TAIL_SECONDS": 0.6,
+    "TTS_MODEL": "gpt-4o-mini-tts",
+    "TTS_VOICE": "alloy",
 
     # Usage cost estimates (rough)
     "TEXT_COST_PER_1K_TOKENS": 0.2,

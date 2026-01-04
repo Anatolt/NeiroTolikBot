@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import subprocess
+import re
 import tempfile
 from pathlib import Path
 import wave
@@ -84,10 +85,22 @@ def _get_ffmpeg_path() -> str | None:
     return None
 
 
-def _stage_voice_log_audio(src_path: str) -> str | None:
+def _sanitize_tmp_prefix(raw: str | None) -> str:
+    if not raw:
+        return "user"
+    cleaned = re.sub(r"[^\w+-]+", "_", str(raw), flags=re.UNICODE).strip("_")
+    if not cleaned:
+        return "user"
+    return cleaned[:32]
+
+
+def _stage_voice_log_audio(src_path: str, prefix: str | None = None) -> str | None:
     try:
         suffix = Path(src_path).suffix or ".wav"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+        safe_prefix = _sanitize_tmp_prefix(prefix)
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=suffix, prefix=f"{safe_prefix}+tmp_"
+        ) as tmp_file:
             staged_path = tmp_file.name
         shutil.copy2(src_path, staged_path)
         return staged_path
@@ -874,8 +887,9 @@ async def process_voice_log_sink(
                 username = username or (member.display_name if member else str(user_id))
                 if segment_paths:
                     total_parts = len(segment_paths)
+                    name_prefix = username or (str(user_id) if user_id else str(user_key))
                     for part_idx, segment_path in enumerate(segment_paths, start=1):
-                        staged_path = _stage_voice_log_audio(segment_path)
+                        staged_path = _stage_voice_log_audio(segment_path, prefix=name_prefix)
                         if not staged_path:
                             continue
                         part_suffix = (
