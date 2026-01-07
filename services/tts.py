@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from openai import AsyncOpenAI
 
 from config import BOT_CONFIG
+from services.memory import get_tts_voice
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ async def synthesize_speech(text: str) -> Tuple[Optional[str], Optional[str]]:
         return None, "OPENAI_API_KEY is not configured"
 
     model = BOT_CONFIG.get("TTS_MODEL", "gpt-4o-mini-tts")
-    voice = BOT_CONFIG.get("TTS_VOICE", "alloy")
+    voice = get_tts_voice() or BOT_CONFIG.get("TTS_VOICE", "alloy")
 
     try:
         response = await client.audio.speech.create(

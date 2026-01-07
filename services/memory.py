@@ -674,6 +674,40 @@ def get_voice_log_debug() -> bool:
     return result[0] not in ("0", "false", "False", "no", "off")
 
 
+def set_tts_voice(voice: str) -> None:
+    """Сохраняет выбранный голос TTS."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        ("tts_voice", voice, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_tts_voice() -> Optional[str]:
+    """Возвращает выбранный голос TTS."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        ("tts_voice",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    return result[0] if result else None
+
+
 def add_notification_flow(discord_channel_id: str, telegram_chat_id: str) -> None:
     """Добавляет связку Discord-канала и Telegram-чата для уведомлений."""
     conn = sqlite3.connect(DB_PATH)

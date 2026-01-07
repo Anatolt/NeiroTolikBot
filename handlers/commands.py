@@ -24,6 +24,7 @@ from services.memory import (
     get_voice_log_debug,
     get_voice_log_model,
     get_voice_model,
+    get_tts_voice,
     get_voice_transcribe_mode,
     is_admin,
     add_notification_flow,
@@ -35,6 +36,7 @@ from services.memory import (
     set_voice_log_debug,
     set_voice_log_model,
     set_voice_model,
+    set_tts_voice,
     set_voice_transcribe_mode,
     set_preferred_model,
 )
@@ -281,7 +283,6 @@ ADMIN_COMMANDS_TEXT = (
     "• /show_tg_chats — показать чаты Telegram, где есть бот\n"
     "• /voice_log_debug_on — включить подробный лог распознавания\n"
     "• /voice_log_debug_off — отключить подробный лог распознавания\n"
-    "• /say — озвучить текст голосом в Telegram\n"
     "• /selftest — офлайн-проверка слеш-команд (отправляет файл)\n"
     "• /admin_help — показать эту справку\n"
     "\n"
@@ -290,6 +291,8 @@ ADMIN_COMMANDS_TEXT = (
     "• /set_voice_model <номер> — выбрать модель распознавания\n"
     "• /voice_send_raw — слать аудио целиком, без нарезки (дороже, лимит 25MB)\n"
     "• /voice_send_segmented — слать аудио кусками по паузам речи (лимит 25MB)\n"
+    "• /tts_voices — список голосов TTS\n"
+    "• /set_tts_voice <номер> — выбрать голос TTS\n"
     "\n"
     "Текстовые команды:\n"
     "• покажи чаты дискорд\n"
@@ -472,6 +475,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"📝 /new - Начать новый диалог (сохраняет историю для будущего использования)\n"
         f"🧹 /clear - Полностью очистить память бота\n"
         f"❓ /help - Показать эту справку\n"
+        f"🗣 /say - Озвучить текст голосом\n"
         f"🤖 /models - Подсказка по спискам моделей\n"
         f"   /models_free, /models_paid, /models_large_context, /models_specialized\n"
         f"   /models_all — полный список моделей\n"
@@ -836,6 +840,38 @@ async def models_voice_log_command(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(_build_voice_log_models_text(), parse_mode="Markdown")
 
 
+async def tts_voices_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает список доступных голосов TTS."""
+    voices = BOT_CONFIG.get("TTS_VOICES", [])
+    if not voices:
+        await update.message.reply_text("Список голосов TTS пуст.")
+        return
+
+    current = get_tts_voice() or BOT_CONFIG.get("TTS_VOICE")
+    lines = ["🗣 Доступные голоса TTS:"]
+    if current:
+        lines.append(f"Текущий: {current}")
+    for idx, voice in enumerate(voices, start=1):
+        lines.append(f"{idx}) {voice} — `/set_tts_voice {idx}`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def tts_voices_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает список доступных голосов TTS."""
+    voices = BOT_CONFIG.get("TTS_VOICES", [])
+    if not voices:
+        await update.message.reply_text("Список голосов TTS пуст.")
+        return
+
+    current = get_tts_voice() or BOT_CONFIG.get("TTS_VOICE")
+    lines = ["🗣 Доступные голоса TTS:"]
+    if current:
+        lines.append(f"Текущий: {current}")
+    for idx, voice in enumerate(voices, start=1):
+        lines.append(f"{idx}) {voice} — `/set_tts_voice {idx}`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def models_pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает модели генерации изображений."""
     piapi_models, imagerouter_models, combined_models = await _refresh_image_models()
@@ -875,6 +911,35 @@ async def set_voice_model_command(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+async def set_tts_voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Меняет голос TTS."""
+    if not _is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    voices = BOT_CONFIG.get("TTS_VOICES", [])
+    if not voices:
+        await update.message.reply_text("Список голосов TTS пуст.")
+        return
+
+    args = context.args or []
+    if not args or not args[0].isdigit():
+        lines = ["Использование: /set_tts_voice <номер>", "", "Доступные голоса:"]
+        for idx, voice in enumerate(voices, start=1):
+            lines.append(f"{idx}) {voice}")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    index = int(args[0])
+    if index < 1 or index > len(voices):
+        await update.message.reply_text("Номер голоса вне диапазона.")
+        return
+
+    selected = voices[index - 1]
+    set_tts_voice(selected)
+    await update.message.reply_text(f"✅ Голос TTS установлен: {selected}")
+
+
 async def voice_send_raw_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Включает отправку аудио в STT без нарезки."""
     if not _is_admin_user(update, context):
@@ -903,10 +968,6 @@ async def voice_send_segmented_command(update: Update, context: ContextTypes.DEF
 
 async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Озвучивает текст голосом (TTS) и отправляет голосовое сообщение."""
-    if not _is_admin_user(update, context):
-        await update.message.reply_text("Доступ к админ-командам запрещён.")
-        return
-
     message = update.message
     if not message:
         return

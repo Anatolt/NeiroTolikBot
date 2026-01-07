@@ -19,6 +19,7 @@ from handlers.commands import (
     models_specialized_command,
     models_voice_command,
     models_voice_log_command,
+    tts_voices_command,
     models_free_callback,
     set_text_model_command,
     set_voice_model_command,
@@ -46,6 +47,7 @@ from handlers.commands import (
     voice_send_raw_command,
     voice_send_segmented_command,
     say_command,
+    set_tts_voice_command,
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message
@@ -170,6 +172,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("models_all", models_all_command))
     application.add_handler(CommandHandler("models_voice", models_voice_command))
     application.add_handler(CommandHandler("voice_log_models", models_voice_log_command))
+    application.add_handler(CommandHandler("tts_voices", tts_voices_command))
     application.add_handler(CommandHandler("models_pic", models_pic_command))
     application.add_handler(CommandHandler("set_text_model", set_text_model_command))
     application.add_handler(CommandHandler("set_voice_model", set_voice_model_command))
@@ -190,6 +193,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("voice_send_raw", voice_send_raw_command))
     application.add_handler(CommandHandler("voice_send_segmented", voice_send_segmented_command))
     application.add_handler(CommandHandler("say", say_command))
+    application.add_handler(CommandHandler("set_tts_voice", set_tts_voice_command))
     application.add_handler(CommandHandler("yes", voice_confirmation_command))
     application.add_handler(CommandHandler("y", voice_confirmation_command))
     application.add_handler(CommandHandler("setflow", setflow_command))

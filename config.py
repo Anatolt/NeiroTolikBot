@@ -64,6 +64,14 @@ BOT_CONFIG = {
     "VOICE_LOG_PAUSE_TAIL_SECONDS": 0.6,
     "TTS_MODEL": "gpt-4o-mini-tts",
     "TTS_VOICE": "alloy",
+    "TTS_VOICES": [
+        "alloy",
+        "echo",
+        "fable",
+        "onyx",
+        "nova",
+        "shimmer",
+    ],
 
     # Usage cost estimates (rough)
     "TEXT_COST_PER_1K_TOKENS": 0.2,
