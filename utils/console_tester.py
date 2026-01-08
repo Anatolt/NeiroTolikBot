@@ -258,8 +258,10 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
         return parts
 
     with patch("services.generation.init_client", return_value=None), patch(
-        "handlers.commands.fetch_models_data", AsyncMock(return_value=fake_models)
-    ), patch("handlers.commands.build_models_messages", AsyncMock(side_effect=fake_build_messages)):
+        "handlers.commands_models.fetch_models_data", AsyncMock(return_value=fake_models)
+    ), patch(
+        "handlers.commands_models.build_models_messages", AsyncMock(side_effect=fake_build_messages)
+    ):
         for cmd_name, command_fn, title in [
             ("/models_free", models_free_command, "Команда /models_free (офлайн)"),
             ("/models_paid", models_paid_command, "Команда /models_paid (офлайн)"),
@@ -523,7 +525,7 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     )
 
     fake_pic_models = (["piapi/test-img"], ["imagerouter/test-img"], ["piapi/test-img", "imagerouter/test-img"])
-    with patch("handlers.commands._refresh_image_models", AsyncMock(return_value=fake_pic_models)):
+    with patch("handlers.commands_models._refresh_image_models", AsyncMock(return_value=fake_pic_models)):
         models_pic_message = FakeMessage()
         models_pic_update = FakeUpdate(effective_user=user, effective_chat=chat, message=models_pic_message)
         await models_pic_command(models_pic_update, context)
