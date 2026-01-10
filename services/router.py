@@ -144,14 +144,6 @@ def _route_with_rules(user_text: str) -> RouterDecision:
     if any(k in text_lower for k in keywords.get("CAPABILITIES", [])):
         return RouterDecision(action="help", prompt=user_text, reason="rule: capabilities keywords")
 
-    # Models list
-    if text_lower in {"модели", "список моделей", "/models"}:
-        return RouterDecision(action="models_hint", prompt=user_text, reason="rule: models hint")
-
-    if text_lower.startswith("модели "):
-        category = text_lower.split(" ", 1)[1].strip()
-        return RouterDecision(action="models_category", prompt=user_text, category=category, reason="rule: models category")
-
     # Consilium
     if text_lower.startswith("консилиум") or text_lower.startswith("/consilium"):
         return RouterDecision(action="consilium", prompt=user_text, reason="rule: consilium keyword")

@@ -97,7 +97,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"• Просить нарисовать картинки\n"
         f"• Указывать модель для ответа (например, 'chatgpt расскажи о погоде')\n"
         f"• Использовать консилиум: 'консилиум: ваш вопрос' или 'консилиум через chatgpt, claude: вопрос'\n"
-        f"• Написать 'модели' или 'models' для просмотра списка моделей"
+        f"• Использовать /models для просмотра списков моделей"
     )
 
     await update.message.reply_text(text=text)

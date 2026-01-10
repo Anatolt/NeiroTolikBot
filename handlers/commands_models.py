@@ -1,12 +1,11 @@
 import logging
-from typing import Optional
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from config import BOT_CONFIG
 from services.generation import (
-    CATEGORY_TITLES,
     build_models_messages,
     categorize_models,
     fetch_models_data,
@@ -30,76 +29,93 @@ MODELS_HINT_TEXT = (
     "• /models_all — полный список (может быть длинным)\n\n"
     "🎙️ /models_voice — модели распознавания речи\n"
     "🎧 /voice_log_models — модели распознавания для логов\n"
-    "🖼️ /models_pic — модели генерации изображений\n\n"
-    "Можно также написать: 'покажи бесплатные модели', 'покажи платные модели' и т.д."
+    "🖼️ /models_pic — модели генерации изображений"
 )
 
-_MODELS_FREE_PAGE_SIZE = 15
+_MODELS_PAGE_SIZE = 15
 _MODELS_FREE_CALLBACK_PREFIX = "models_free:page:"
+_MODELS_PAID_CALLBACK_PREFIX = "models_paid:page:"
+_MODELS_LARGE_CALLBACK_PREFIX = "models_large_context:page:"
+_MODELS_SPECIALIZED_CALLBACK_PREFIX = "models_specialized:page:"
+_MODELS_PIC_CALLBACK_PREFIX = "models_pic:page:"
 
 
-def _build_image_models_text(
+def _build_models_page(
+    title: str,
+    model_items: list[str],
+    page: int,
+    current_model: str | None,
+    page_size: int = _MODELS_PAGE_SIZE,
+    set_command: str | None = None,
+) -> tuple[str, int, int]:
+    total = len(model_items)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    end = start + page_size
+    lines = [f"{title} (страница {page}/{total_pages}):"]
+    if current_model:
+        lines.append(f"Текущая: {current_model}")
+    if not model_items:
+        lines.append("Список моделей пуст.")
+        return "\n".join(lines), page, total_pages
+
+    for idx, item in enumerate(model_items[start:end], start=start + 1):
+        lines.append(f"{idx}) {item}")
+        if set_command:
+            lines.append(f"/{set_command}_{idx}")
+
+    return "\n".join(lines), page, total_pages
+
+
+def _build_models_markup(
+    prefix: str, page: int, total_pages: int
+) -> InlineKeyboardMarkup | None:
+    if total_pages <= 1:
+        return None
+
+    prev_page = page - 1 if page > 1 else total_pages
+    next_page = page + 1 if page < total_pages else 1
+    keyboard = [
+        [
+            InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"{prefix}{prev_page}"),
+            InlineKeyboardButton("Следующая ➡️", callback_data=f"{prefix}{next_page}"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _build_image_model_items(
     piapi_models: list[str],
     imagerouter_models: list[str],
     combined_models: list[str],
-) -> str:
-    model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
-    lines = ["🖼️ Модели генерации изображений:"]
-    if model:
-        lines.append(f"Текущая: {model}")
-    if not combined_models:
-        lines.append("Список моделей генерации изображений пуст.")
-        return "\n".join(lines)
-
-    index = 1
+) -> list[str]:
     seen: set[str] = set()
-
-    def _append_section(title: str, models: list[str], index: int) -> int:
-        added = False
-        for item in models:
-            if item in seen:
-                continue
-            if not added:
-                lines.append(title)
-                added = True
-            seen.add(item)
-            lines.append(f"{index}) {item} — `/set_pic_model {index}`")
-            index += 1
-        return index
-
-    index = _append_section("PiAPI:", piapi_models, index)
-    _append_section("ImageRouter:", imagerouter_models, index)
-    return "\n".join(lines)
+    items: list[str] = []
+    for model in piapi_models + imagerouter_models + combined_models:
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        items.append(model)
+    return items
 
 
-async def _reply_text_in_parts(
-    update: Update, text: str, parse_mode: str | None = None, max_length: int = 4000
-) -> None:
-    if len(text) <= max_length:
-        await update.message.reply_text(text, parse_mode=parse_mode)
-        return
+def _store_model_list(context: ContextTypes.DEFAULT_TYPE, model_ids: list[str]) -> None:
+    context.user_data["model_select_list"] = model_ids
 
-    parts: list[str] = []
-    current_part = ""
-    for line in text.split("\n"):
-        if len(current_part) + len(line) + 1 > max_length:
-            if current_part:
-                parts.append(current_part)
-            current_part = line + "\n"
-        else:
-            current_part += line + "\n"
 
-    if current_part:
-        parts.append(current_part)
+def _store_image_model_list(context: ContextTypes.DEFAULT_TYPE, model_ids: list[str]) -> None:
+    context.user_data["image_model_select_list"] = model_ids
 
-    for idx, part in enumerate(parts):
-        if idx == 0:
-            await update.message.reply_text(part, parse_mode=parse_mode)
-        else:
-            await update.message.reply_text(
-                f"*(продолжение {idx + 1}/{len(parts)})*\n\n{part}",
-                parse_mode="Markdown",
-            )
+
+def _parse_index_command(text: str, prefix: str) -> int | None:
+    match = re.match(rf"^/{re.escape(prefix)}_(\d+)(?:@\\w+)?$", text.strip())
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 async def _refresh_image_models() -> tuple[list[str], list[str], list[str]]:
@@ -158,43 +174,37 @@ async def _get_free_model_ids() -> list[str]:
     ]
 
 
+async def _get_model_ids_by_category(category: str) -> list[str]:
+    models_data = await fetch_models_data()
+    if not models_data:
+        return []
+    categories = categorize_models(models_data)
+    excluded = set(BOT_CONFIG.get("EXCLUDED_MODELS", []))
+    return [
+        model.get("id")
+        for model in categories.get(category, [])
+        if model.get("id") and model.get("id") not in excluded
+    ]
+
+
 def _build_free_models_page(
     model_ids: list[str],
     page: int,
     current_model: str | None,
-    page_size: int = _MODELS_FREE_PAGE_SIZE,
+    page_size: int = _MODELS_PAGE_SIZE,
 ) -> tuple[str, int, int]:
-    total = len(model_ids)
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    page = max(1, min(page, total_pages))
-    start = (page - 1) * page_size
-    end = start + page_size
-    lines = [f"🆓 Бесплатные модели (страница {page}/{total_pages}):"]
-    if current_model:
-        lines.append(f"Текущая: {current_model}")
-    if not model_ids:
-        lines.append("Список моделей пуст.")
-        return "\n".join(lines), page, total_pages
-
-    for idx, model_id in enumerate(model_ids[start:end], start=start + 1):
-        lines.append(f"{idx}) {model_id} — `/set_text_model {idx}`")
-
-    return "\n".join(lines), page, total_pages
+    return _build_models_page(
+        "🆓 Бесплатные модели",
+        model_ids,
+        page,
+        current_model,
+        page_size=page_size,
+        set_command="set_model",
+    )
 
 
 def _build_free_models_markup(page: int, total_pages: int) -> InlineKeyboardMarkup | None:
-    if total_pages <= 1:
-        return None
-
-    prev_page = page - 1 if page > 1 else total_pages
-    next_page = page + 1 if page < total_pages else 1
-    keyboard = [
-        [
-            InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"{_MODELS_FREE_CALLBACK_PREFIX}{prev_page}"),
-            InlineKeyboardButton("Следующая ➡️", callback_data=f"{_MODELS_FREE_CALLBACK_PREFIX}{next_page}"),
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return _build_models_markup(_MODELS_FREE_CALLBACK_PREFIX, page, total_pages)
 
 
 async def _send_models(update: Update, order: list[str], header: str, max_items: int | None = 20) -> None:
@@ -224,9 +234,10 @@ async def models_free_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = str(update.effective_chat.id)
     user_id = str(update.effective_user.id)
     current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
     message, resolved_page, total_pages = _build_free_models_page(model_ids, page, current_model)
     markup = _build_free_models_markup(resolved_page, total_pages)
-    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=markup)
+    await update.message.reply_text(message, reply_markup=markup)
 
 
 async def models_free_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -249,27 +260,228 @@ async def models_free_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = str(query.message.chat_id) if query.message else ""
     user_id = str(query.from_user.id) if query.from_user else ""
     current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
     message, resolved_page, total_pages = _build_free_models_page(model_ids, page, current_model)
     markup = _build_free_models_markup(resolved_page, total_pages)
 
     await query.answer()
     if query.message:
-        await query.edit_message_text(message, parse_mode="Markdown", reply_markup=markup)
+        await query.edit_message_text(message, reply_markup=markup)
+
+
+async def models_paid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия пагинации для /models_paid."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    data = query.data
+    if not data.startswith(_MODELS_PAID_CALLBACK_PREFIX):
+        return
+
+    try:
+        page = int(data.split(":")[-1])
+    except ValueError:
+        await query.answer("Некорректная страница.")
+        return
+
+    model_ids = await _get_model_ids_by_category("paid")
+    chat_id = str(query.message.chat_id) if query.message else ""
+    user_id = str(query.from_user.id) if query.from_user else ""
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
+    message, resolved_page, total_pages = _build_models_page(
+        "💳 Платные модели",
+        model_ids,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_model",
+    )
+    markup = _build_models_markup(_MODELS_PAID_CALLBACK_PREFIX, resolved_page, total_pages)
+
+    await query.answer()
+    if query.message:
+        await query.edit_message_text(message, reply_markup=markup)
+
+
+async def models_large_context_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия пагинации для /models_large_context."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    data = query.data
+    if not data.startswith(_MODELS_LARGE_CALLBACK_PREFIX):
+        return
+
+    try:
+        page = int(data.split(":")[-1])
+    except ValueError:
+        await query.answer("Некорректная страница.")
+        return
+
+    model_ids = await _get_model_ids_by_category("large_context")
+    chat_id = str(query.message.chat_id) if query.message else ""
+    user_id = str(query.from_user.id) if query.from_user else ""
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
+    message, resolved_page, total_pages = _build_models_page(
+        "📦 Модели с большим контекстом",
+        model_ids,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_model",
+    )
+    markup = _build_models_markup(_MODELS_LARGE_CALLBACK_PREFIX, resolved_page, total_pages)
+
+    await query.answer()
+    if query.message:
+        await query.edit_message_text(message, reply_markup=markup)
+
+
+async def models_pic_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия пагинации для /models_pic."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    data = query.data
+    if not data.startswith(_MODELS_PIC_CALLBACK_PREFIX):
+        return
+
+    try:
+        page = int(data.split(":")[-1])
+    except ValueError:
+        await query.answer("Некорректная страница.")
+        return
+
+    piapi_models, imagerouter_models, combined_models = await _refresh_image_models()
+    items = _build_image_model_items(piapi_models, imagerouter_models, combined_models)
+    current_model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+    _store_image_model_list(context, combined_models)
+    message, resolved_page, total_pages = _build_models_page(
+        "🖼️ Модели генерации изображений",
+        items,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_pic_model",
+    )
+    markup = _build_models_markup(_MODELS_PIC_CALLBACK_PREFIX, resolved_page, total_pages)
+
+    await query.answer()
+    if query.message:
+        await query.edit_message_text(message, reply_markup=markup)
+
+
+async def models_specialized_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия пагинации для /models_specialized."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    data = query.data
+    if not data.startswith(_MODELS_SPECIALIZED_CALLBACK_PREFIX):
+        return
+
+    try:
+        page = int(data.split(":")[-1])
+    except ValueError:
+        await query.answer("Некорректная страница.")
+        return
+
+    model_ids = await _get_model_ids_by_category("specialized")
+    chat_id = str(query.message.chat_id) if query.message else ""
+    user_id = str(query.from_user.id) if query.from_user else ""
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
+    message, resolved_page, total_pages = _build_models_page(
+        "🎯 Специализированные модели",
+        model_ids,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_model",
+    )
+    markup = _build_models_markup(_MODELS_SPECIALIZED_CALLBACK_PREFIX, resolved_page, total_pages)
+
+    await query.answer()
+    if query.message:
+        await query.edit_message_text(message, reply_markup=markup)
 
 
 async def models_paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает платные модели."""
-    await _send_models(update, ["paid"], CATEGORY_TITLES["paid"], max_items=20)
+    args = context.args or []
+    page = 1
+    if args and args[0].isdigit():
+        page = int(args[0])
+
+    model_ids = await _get_model_ids_by_category("paid")
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
+    message, resolved_page, total_pages = _build_models_page(
+        "💳 Платные модели",
+        model_ids,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_model",
+    )
+    markup = _build_models_markup(_MODELS_PAID_CALLBACK_PREFIX, resolved_page, total_pages)
+    await update.message.reply_text(message, reply_markup=markup)
 
 
 async def models_large_context_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает модели с большим контекстом."""
-    await _send_models(update, ["large_context"], CATEGORY_TITLES["large_context"], max_items=20)
+    args = context.args or []
+    page = 1
+    if args and args[0].isdigit():
+        page = int(args[0])
+
+    model_ids = await _get_model_ids_by_category("large_context")
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
+    message, resolved_page, total_pages = _build_models_page(
+        "📦 Модели с большим контекстом",
+        model_ids,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_model",
+    )
+    markup = _build_models_markup(_MODELS_LARGE_CALLBACK_PREFIX, resolved_page, total_pages)
+    await update.message.reply_text(message, reply_markup=markup)
 
 
 async def models_specialized_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает специализированные модели."""
-    await _send_models(update, ["specialized"], CATEGORY_TITLES["specialized"], max_items=20)
+    args = context.args or []
+    page = 1
+    if args and args[0].isdigit():
+        page = int(args[0])
+
+    model_ids = await _get_model_ids_by_category("specialized")
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    current_model = get_preferred_model(chat_id, user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    _store_model_list(context, model_ids)
+    message, resolved_page, total_pages = _build_models_page(
+        "🎯 Специализированные модели",
+        model_ids,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_model",
+    )
+    markup = _build_models_markup(_MODELS_SPECIALIZED_CALLBACK_PREFIX, resolved_page, total_pages)
+    await update.message.reply_text(message, reply_markup=markup)
 
 
 async def models_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,11 +502,78 @@ async def models_voice_log_command(update: Update, context: ContextTypes.DEFAULT
 async def models_pic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает модели генерации изображений."""
     piapi_models, imagerouter_models, combined_models = await _refresh_image_models()
-    await _reply_text_in_parts(
-        update,
-        _build_image_models_text(piapi_models, imagerouter_models, combined_models),
-        parse_mode="Markdown",
+    args = context.args or []
+    page = 1
+    if args and args[0].isdigit():
+        page = int(args[0])
+
+    items = _build_image_model_items(piapi_models, imagerouter_models, combined_models)
+    current_model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+    _store_image_model_list(context, combined_models)
+    message, resolved_page, total_pages = _build_models_page(
+        "🖼️ Модели генерации изображений",
+        items,
+        page,
+        current_model,
+        page_size=_MODELS_PAGE_SIZE,
+        set_command="set_pic_model",
     )
+    markup = _build_models_markup(_MODELS_PIC_CALLBACK_PREFIX, resolved_page, total_pages)
+    await update.message.reply_text(message, reply_markup=markup)
+
+
+async def set_model_number_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Меняет модель генерации текста по номеру из последнего списка."""
+    if not update.message or not update.message.text:
+        return
+
+    index = _parse_index_command(update.message.text, "set_model")
+    if index is None:
+        return
+
+    model_ids = context.user_data.get("model_select_list") if context else None
+    if not model_ids:
+        model_ids = await _get_free_model_ids()
+
+    if not model_ids:
+        await update.message.reply_text("Список моделей пуст. Сначала открой список моделей.")
+        return
+
+    if index < 1 or index > len(model_ids):
+        await update.message.reply_text("Номер модели вне диапазона.")
+        return
+
+    selected = model_ids[index - 1]
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    set_preferred_model(chat_id, user_id, selected)
+    await update.message.reply_text(f"✅ Модель текста установлена: {selected}")
+
+
+async def set_pic_model_number_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Меняет модель генерации изображений по номеру из последнего списка."""
+    if not update.message or not update.message.text:
+        return
+
+    index = _parse_index_command(update.message.text, "set_pic_model")
+    if index is None:
+        return
+
+    model_ids = context.user_data.get("image_model_select_list") if context else None
+    if not model_ids:
+        _piapi_models, _imagerouter_models, model_ids = await _refresh_image_models()
+
+    if not model_ids:
+        await update.message.reply_text("Список моделей генерации изображений пуст.")
+        return
+
+    if index < 1 or index > len(model_ids):
+        await update.message.reply_text("Номер модели вне диапазона.")
+        return
+
+    selected = model_ids[index - 1]
+    BOT_CONFIG.setdefault("IMAGE_GENERATION", {})["MODEL"] = selected
+    await update.message.reply_text(f"✅ Модель генерации изображений установлена: {selected}")
 
 
 async def set_text_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

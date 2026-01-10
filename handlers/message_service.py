@@ -298,6 +298,13 @@ async def execute_routed_request(
     suggested_models = routed.suggested_models
     model = routed.model
     use_context = routed.use_context
+    normalized_text = request.text.strip().lower()
+
+    if request_type in {"models_hint", "models_category"} and not normalized_text.startswith("/models"):
+        request_type = "text"
+        content = request.text
+        suggested_models = []
+        model = None
 
     async def notify_model_switch(failed_model: str, next_model: str, error_text: str | None) -> None:
         reason = f" ({error_text})" if error_text else ""
@@ -352,7 +359,7 @@ async def execute_routed_request(
         ]
         if image_model:
             prompt_lines.append(f"🖼️ Модель изображения: {image_model}")
-        prompt_lines.append("Сменить генератор: /models_pic → /set_pic_model <номер>")
+        prompt_lines.append("Сменить генератор: /models_pic → /set_pic_model_<номер>")
         responses.append(MessageResponse(text="\n".join(prompt_lines)))
 
         image_url = await generate_image(translated_prompt)
