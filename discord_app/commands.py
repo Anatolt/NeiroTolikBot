@@ -77,6 +77,9 @@ def register_commands(bot: commands.Bot) -> None:
             await _reply_ctx(ctx, "Сначала зайди в голосовой канал.", responded)
             return
 
+        if hasattr(ctx, "respond"):
+            responded = await _reply_ctx(ctx, "🗣️ Подключаюсь к голосу...", responded)
+
         ffmpeg_path = _get_ffmpeg_path()
         if not ffmpeg_path:
             await _reply_ctx(ctx, "ffmpeg не найден, TTS недоступен.", responded)

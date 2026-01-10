@@ -44,7 +44,11 @@ from services.memory import (
     add_notification_flow,
     clear_memory,
     get_history,
+    get_voice_log_model,
+    get_voice_model,
     init_db,
+    set_voice_log_model,
+    set_voice_model,
     set_voice_notification_chat_id,
     upsert_discord_voice_channel,
     upsert_telegram_chat,
@@ -373,6 +377,8 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
 
     # 10. Дополнительные команды (голосовые/шапка/картинки/flows)
     original_voice_models = BOT_CONFIG.get("VOICE_MODELS")
+    original_voice_model = get_voice_model()
+    original_voice_log_model = get_voice_log_model()
     BOT_CONFIG["VOICE_MODELS"] = ["test-voice-1", "test-voice-2"]
 
     voice_models_message = FakeMessage()
@@ -425,6 +431,10 @@ async def run_command_tests(chat_id: str, user_id: str) -> List[Tuple[str, bool,
     )
 
     BOT_CONFIG["VOICE_MODELS"] = original_voice_models
+    if original_voice_model:
+        set_voice_model(original_voice_model)
+    if original_voice_log_model:
+        set_voice_log_model(original_voice_log_model)
 
     header_on_message = FakeMessage()
     header_on_update = FakeUpdate(effective_user=user, effective_chat=chat, message=header_on_message)

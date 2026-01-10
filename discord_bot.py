@@ -21,7 +21,7 @@ from discord_app.voice_log import ensure_voice_log_task
 from discord_app.voice_state import register_voice_state_handlers
 from discord_selftest import register_discord_selftest
 from services.generation import check_model_availability, init_client, refresh_models_from_api
-from services.memory import get_last_voice_channel, init_db, set_last_voice_channel
+from services.memory import get_discord_autojoin, get_last_voice_channel, init_db, set_last_voice_channel
 from utils.helpers import resolve_system_prompt
 
 load_dotenv()
@@ -152,6 +152,33 @@ async def on_ready() -> None:
             logger.info("Reconnected to voice channel %s in guild %s", channel.id, guild.id)
         except Exception as exc:
             logger.warning("Failed to reconnect to voice channel %s: %s", channel.id, exc)
+
+    for guild in bot.guilds:
+        if not get_discord_autojoin(str(guild.id)):
+            continue
+        voice_client = guild.voice_client
+        if voice_client and voice_client.is_connected():
+            continue
+
+        candidates = []
+        for channel in list(guild.voice_channels) + list(guild.stage_channels):
+            humans = count_humans_in_voice(channel)
+            if humans > 0:
+                candidates.append((humans, channel))
+        if not candidates:
+            continue
+        candidates.sort(reverse=True, key=lambda item: item[0])
+        channel = candidates[0][1]
+        try:
+            voice_client = await connect_voice_channel(channel)
+            if voice_client:
+                ensure_voice_log_task(voice_client)
+                set_last_voice_channel(str(guild.id), str(channel.id))
+                logger.info("Auto-joined active voice channel %s in guild %s", channel.id, guild.id)
+            else:
+                logger.warning("Auto-join failed to connect in guild %s", guild.id)
+        except Exception as exc:
+            logger.warning("Auto-join failed in guild %s: %s", guild.id, exc)
 
 
 async def main() -> None:

@@ -1,7 +1,7 @@
 import logging
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -349,6 +349,36 @@ def get_voice_logs_for_range(
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_recent_voice_logs(
+    platform: str,
+    channel_id: str,
+    minutes: int,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    start_ts = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+    end_ts = datetime.now().isoformat()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT username, text, timestamp, user_id
+        FROM voice_logs
+        WHERE platform = ?
+          AND channel_id = ?
+          AND timestamp >= ?
+          AND timestamp < ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+        """,
+        (platform, channel_id, start_ts, end_ts, limit),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return list(reversed([dict(row) for row in rows]))
 
 def add_message(chat_id: str, user_id: str, role: str, model: str, text: str, session_id: Optional[str] = None) -> None:
     """Добавление сообщения в историю."""

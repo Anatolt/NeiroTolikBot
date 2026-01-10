@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -31,7 +32,7 @@ async def connect_voice_channel(
 
     try:
         voice_client = await channel.connect()
-    except discord.ClientException as exc:
+    except (discord.ClientException, asyncio.TimeoutError) as exc:
         existing = channel.guild.voice_client
         if existing and existing.is_connected():
             return existing

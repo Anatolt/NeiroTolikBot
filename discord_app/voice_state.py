@@ -116,6 +116,8 @@ def register_voice_state_handlers(bot: commands.Bot) -> None:
                         voice_client = await connect_voice_channel(channel)
                         if voice_client:
                             ensure_voice_log_task(voice_client)
+                        else:
+                            logger.warning("Auto-join failed to connect to channel %s", channel.id)
                         set_last_voice_channel(str(channel.guild.id), str(channel.id))
                         if not get_discord_autojoin_announce_sent(str(channel.guild.id)):
                             announce_channel = pick_announcement_channel(channel.guild)

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import re
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 import wave
@@ -22,6 +23,8 @@ from services.memory import (
     add_voice_log,
     add_voice_summary,
     get_last_voice_summary_date,
+    get_preferred_model,
+    get_recent_voice_logs,
     get_voice_logs_for_range,
     get_all_admins,
     get_voice_log_debug,
@@ -33,10 +36,12 @@ from services.memory import (
     set_last_voice_channel,
 )
 from services.speech_to_text import transcribe_audio
+from services.tts import synthesize_speech
 
 logger = logging.getLogger(__name__)
 
 _voice_log_tasks: dict[int, asyncio.Task] = {}
+_wake_last_trigger: dict[str, float] = {}
 
 
 async def _send_admin_voice_log(
@@ -141,6 +146,184 @@ def _get_ffmpeg_path() -> str | None:
         if candidate and os.path.exists(candidate):
             return candidate
     return None
+
+
+def _extract_wake_request(
+    text: str,
+    wake_words: list[str],
+) -> tuple[str, str] | None:
+    if not text or not wake_words:
+        return None
+    escaped = [re.escape(word) for word in wake_words if word]
+    if not escaped:
+        return None
+    pattern = re.compile(rf"\b({'|'.join(escaped)})\b", re.IGNORECASE | re.UNICODE)
+    match = pattern.search(text)
+    if not match:
+        return None
+    tail = text[match.end() :].lstrip(" ,.:;—-!?\t\n")
+    if not tail.strip():
+        return None
+    return match.group(1), tail.strip()
+
+
+def _sanitize_voice_response(text: str) -> str:
+    cleaned = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    cleaned = cleaned.replace("`", "").replace("*", "").replace("_", "")
+    cleaned = cleaned.replace("#", "").replace("> ", "")
+    cleaned = " ".join(cleaned.split())
+    return cleaned.strip()
+
+
+async def _play_wake_response(
+    voice_client: discord.VoiceClient,
+    text: str,
+    channel_id: str,
+    user_id: str,
+) -> None:
+    if not voice_client or not voice_client.is_connected():
+        return
+    ffmpeg_path = _get_ffmpeg_path()
+    if not ffmpeg_path:
+        logger.warning("Wake word response skipped: ffmpeg not found")
+        return
+    audio_path, error = await synthesize_speech(
+        text,
+        platform="discord",
+        chat_id=channel_id,
+        user_id=user_id,
+    )
+    if error or not audio_path:
+        logger.warning("Wake word TTS error: %s", error)
+        return
+
+    done = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _after_playback(err: Exception | None) -> None:
+        if err:
+            logger.warning("Wake word playback error: %s", err)
+        loop.call_soon_threadsafe(done.set)
+
+    try:
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()
+        source = discord.FFmpegPCMAudio(audio_path, executable=ffmpeg_path)
+        voice_client.play(source, after=_after_playback)
+        await done.wait()
+    finally:
+        if os.path.exists(audio_path):
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                logger.warning("Failed to remove temp file %s", audio_path)
+
+
+async def _maybe_handle_wake_word(
+    voice_client: discord.VoiceClient,
+    channel: discord.abc.GuildChannel | None,
+    user_id: int | None,
+    username: str | None,
+    transcript: str,
+    timeline_entries: list[dict[str, object]],
+    debug: callable,
+) -> None:
+    wake_words = BOT_CONFIG.get("VOICE_WAKE_WORDS") or [BOT_CONFIG.get("VOICE_WAKE_WORD")]
+    wake_words = [word.strip() for word in wake_words if isinstance(word, str) and word.strip()]
+    if not wake_words or not channel:
+        return
+    extracted = _extract_wake_request(transcript, wake_words)
+    if not extracted:
+        return
+    wake_word, request_text = extracted
+
+    channel_id = str(getattr(channel, "id", "unknown"))
+    cooldown = int(BOT_CONFIG.get("VOICE_WAKE_COOLDOWN_SECONDS", 8) or 8)
+    now = time.monotonic()
+    last_hit = _wake_last_trigger.get(channel_id, 0.0)
+    if now - last_hit < cooldown:
+        debug(f"wake_word=skip cooldown={cooldown}")
+        return
+    _wake_last_trigger[channel_id] = now
+
+    context_minutes = int(BOT_CONFIG.get("VOICE_WAKE_CONTEXT_MINUTES", 10) or 10)
+    max_logs = int(BOT_CONFIG.get("VOICE_WAKE_MAX_LOGS", 12) or 12)
+    recent_logs = get_recent_voice_logs(
+        "discord",
+        channel_id,
+        context_minutes,
+        limit=max_logs,
+    )
+    context_lines = []
+    for row in recent_logs:
+        speaker = row.get("username") or row.get("user_id") or "user"
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        context_lines.append(f"{speaker}: {text}")
+    context_block = "\n".join(context_lines[-max_logs:]) or "—"
+
+    system_prompt = (
+        "Ты отвечаешь в голосовом чате Discord. "
+        "Ответ должен быть коротким, 1-2 предложения. "
+        "Без кода, без Markdown, без списков. "
+        "Если вопрос неясен — задай короткий уточняющий вопрос."
+    )
+    user_prompt = (
+        "Контекст последних реплик (голосовой чат):\n"
+        f"{context_block}\n\n"
+        f"После ключевого слова «{wake_word}» пользователь {username or 'пользователь'} сказал: {request_text}\n\n"
+        "Ответь кратко."
+    )
+
+    preferred = None
+    if user_id is not None:
+        preferred = get_preferred_model(channel_id, str(user_id))
+    model = preferred or BOT_CONFIG.get("DEFAULT_MODEL") or "gpt-4o-mini"
+
+    debug(f"wake_word=hit model={model}")
+    response, _model_used, _guard = await generate_text(
+        request_text,
+        model=model,
+        chat_id=channel_id,
+        user_id=str(user_id or ""),
+        prepared_messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        use_context=False,
+        platform="discord",
+    )
+    cleaned = _sanitize_voice_response(response or "")
+    max_chars = int(BOT_CONFIG.get("VOICE_WAKE_MAX_RESPONSE_CHARS", 300) or 300)
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip()
+    if not cleaned:
+        return
+    await _play_wake_response(
+        voice_client,
+        cleaned,
+        channel_id=channel_id,
+        user_id=str(user_id or ""),
+    )
+    bot_name = getattr(getattr(voice_client, "user", None), "name", None)
+    bot_label = bot_name or "NeiroTolikBot"
+    timeline_entries.append(
+        {
+            "start": 0.0,
+            "end": 0.0,
+            "username": bot_label,
+            "text": cleaned,
+        }
+    )
+    add_voice_log(
+        platform="discord",
+        guild_id=str(getattr(getattr(channel, "guild", None), "id", "")),
+        channel_id=channel_id,
+        user_id="bot",
+        username=bot_label,
+        text=cleaned,
+    )
 
 
 def _sanitize_tmp_prefix(raw: str | None) -> str:
@@ -1169,6 +1352,15 @@ async def process_voice_log_sink(
                     user_id=str(user_id),
                     duration_seconds=None,
                     size_bytes=transcribed_bytes or size_bytes,
+                )
+                await _maybe_handle_wake_word(
+                    voice_client,
+                    channel,
+                    user_id,
+                    username,
+                    transcript,
+                    timeline_entries,
+                    _debug,
                 )
             finally:
                 if segment_dir and os.path.exists(segment_dir):
