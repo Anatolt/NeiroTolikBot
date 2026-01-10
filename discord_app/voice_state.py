@@ -41,6 +41,7 @@ async def _disconnect_if_empty(guild_id: int) -> None:
         try:
             cancel_voice_log_task(guild_id)
             await voice_client.disconnect()
+            set_last_voice_channel(str(guild_id), None)
         except Exception as exc:
             logger.warning("Failed to auto-leave voice channel: %s", exc)
 
@@ -156,4 +157,3 @@ def register_voice_state_handlers(bot: commands.Bot) -> None:
                 )
                 _voice_empty_notify_tasks[channel.id] = task
                 task.add_done_callback(lambda t, cid=channel.id: _cleanup_voice_empty_task(cid, t))
-

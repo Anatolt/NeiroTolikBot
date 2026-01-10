@@ -6,21 +6,31 @@ import shutil
 import subprocess
 import re
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 import wave
 
 import discord
 
 from config import BOT_CONFIG
+from discord_app.notifications import send_telegram_notification
 from discord_app.runtime import get_bot, get_telegram_bot
+from discord_app.utils import count_humans_in_voice, pick_announcement_channel
+from services.generation import generate_text
 from services.analytics import log_stt_usage
 from services.memory import (
     add_voice_log,
+    add_voice_summary,
+    get_last_voice_summary_date,
+    get_voice_logs_for_range,
     get_all_admins,
     get_voice_log_debug,
     get_voice_log_model,
     get_voice_model,
+    get_voice_summary_enabled,
     get_voice_transcribe_mode,
+    get_voice_transcripts_enabled,
+    set_last_voice_channel,
 )
 from services.speech_to_text import transcribe_audio
 
@@ -76,6 +86,54 @@ def _format_voice_log_lines(
     for username, text in items:
         lines.append(f"{username}: {text}")
     return "\n".join(lines)
+
+
+def _split_message(text: str, limit: int = 1800) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        line = line.rstrip()
+        if not line:
+            line = " "
+        if len(current) + len(line) + 1 > limit:
+            if current:
+                parts.append(current.rstrip())
+            current = line + "\n"
+        else:
+            current += line + "\n"
+    if current.strip():
+        parts.append(current.rstrip())
+    return parts
+
+
+def _format_discord_transcript(
+    channel: discord.abc.GuildChannel | None,
+    items: list[tuple[str, str]],
+) -> str:
+    channel_title = getattr(channel, "name", "unknown")
+    lines = [f"🎧 Транскрипция голоса: {channel_title}"]
+    for username, text in items:
+        lines.append(f"{username}: {text}")
+    lines.append("Отключить отправку: !transcripts_off")
+    return "\n".join(lines)
+
+
+def _pick_transcript_channel(
+    guild: discord.Guild,
+    voice_channel: discord.abc.GuildChannel | None,
+) -> discord.TextChannel | None:
+    target_name = getattr(voice_channel, "name", None)
+    if target_name:
+        for text_channel in guild.text_channels:
+            if text_channel.name.lower() == str(target_name).lower():
+                if text_channel.permissions_for(guild.me).send_messages:  # type: ignore[arg-type]
+                    return text_channel
+    channel = pick_announcement_channel(guild)
+    if channel and channel.permissions_for(guild.me).send_messages:  # type: ignore[arg-type]
+        return channel
+    return None
 
 
 def _get_ffmpeg_path() -> str | None:
@@ -528,6 +586,173 @@ async def _voice_log_capture_callback(
     done_event.set()
 
 
+async def _send_discord_transcript(
+    voice_channel: discord.abc.GuildChannel | None,
+    items: list[tuple[str, str]],
+) -> None:
+    if not voice_channel or not items:
+        return
+    if not get_voice_transcripts_enabled(str(voice_channel.id)):
+        return
+
+    guild = getattr(voice_channel, "guild", None)
+    if not guild:
+        return
+    text_channel = _pick_transcript_channel(guild, voice_channel)
+    if not text_channel:
+        return
+
+    message_text = _format_discord_transcript(voice_channel, items)
+    for part in _split_message(message_text):
+        try:
+            logger.info(
+                "Sending transcript to text channel %s in guild %s",
+                text_channel.id,
+                guild.id,
+            )
+            await text_channel.send(part)
+        except Exception as exc:
+            logger.warning("Failed to send transcript to Discord: %s", exc)
+            break
+
+
+def _count_voice_sessions(
+    rows: list[dict[str, object]],
+    gap_minutes: int,
+) -> tuple[int, list[str]]:
+    if not rows:
+        return 0, []
+    gap = timedelta(minutes=gap_minutes)
+    boundaries: list[str] = []
+    sessions = 1
+    prev_ts: datetime | None = None
+    for row in rows:
+        ts_raw = row.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_raw))
+        except ValueError:
+            continue
+        if prev_ts and ts - prev_ts > gap:
+            sessions += 1
+            boundaries.append(ts.isoformat())
+        prev_ts = ts
+    return sessions, boundaries
+
+
+async def _maybe_send_daily_summary(
+    voice_channel: discord.abc.GuildChannel | None,
+) -> None:
+    if not voice_channel:
+        return
+    if not get_voice_summary_enabled(str(voice_channel.id)):
+        return
+
+    today = datetime.now().date()
+    summary_date = today - timedelta(days=1)
+    summary_date_str = summary_date.isoformat()
+
+    last_summary_date = get_last_voice_summary_date("discord", str(voice_channel.id))
+    if last_summary_date == summary_date_str:
+        return
+
+    start_dt = datetime.combine(summary_date, datetime.min.time())
+    end_dt = start_dt + timedelta(days=1)
+    summary_message = await generate_voice_summary_for_range(
+        voice_channel,
+        start_dt,
+        end_dt,
+        f"Саммари {summary_date_str}",
+    )
+    if not summary_message:
+        add_voice_summary(
+            "discord",
+            str(voice_channel.id),
+            summary_date_str,
+            "Нет разговоров.",
+            guild_id=str(getattr(voice_channel.guild, "id", "")),
+        )
+        return
+
+    try:
+        await send_telegram_notification(
+            summary_message,
+            discord_channel_id=str(voice_channel.id),
+        )
+    except Exception as exc:
+        logger.warning("Failed to send daily voice summary: %s", exc)
+
+    add_voice_summary(
+        "discord",
+        str(voice_channel.id),
+        summary_date_str,
+        summary_message,
+        guild_id=str(getattr(voice_channel.guild, "id", "")),
+    )
+
+
+async def generate_voice_summary_for_range(
+    voice_channel: discord.abc.GuildChannel,
+    start_dt: datetime,
+    end_dt: datetime,
+    title: str,
+) -> str | None:
+    rows = get_voice_logs_for_range(
+        "discord",
+        str(voice_channel.id),
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+    )
+    if not rows:
+        return None
+
+    gap_minutes = int(BOT_CONFIG.get("VOICE_SUMMARY_GAP_MINUTES", 30) or 30)
+    sessions, _boundaries = _count_voice_sessions(rows, gap_minutes)
+
+    max_chars = int(BOT_CONFIG.get("VOICE_SUMMARY_MAX_CHARS", 40000) or 40000)
+    lines: list[str] = []
+    used = 0
+    truncated = False
+    for row in rows:
+        username = row.get("username") or row.get("user_id") or "user"
+        text = row.get("text") or ""
+        ts = row.get("timestamp") or ""
+        line = f"{ts} {username}: {text}"
+        if used + len(line) + 1 > max_chars:
+            truncated = True
+            break
+        lines.append(line)
+        used += len(line) + 1
+
+    transcript_block = "\n".join(lines)
+    summary_prompt = (
+        "Сделай краткое саммари разговора из голосового чата. "
+        "Укажи основные темы и события. "
+        f"Если было несколько отдельных диалогов с паузами больше {gap_minutes} минут, "
+        "обязательно отметь это в саммари и укажи количество сессий."
+    )
+    if truncated:
+        summary_prompt += " Источник урезан по длине, укажи это, если заметно."
+
+    prepared_messages = [
+        {"role": "system", "content": summary_prompt},
+        {"role": "user", "content": f"Транскрипция:\n{transcript_block}"},
+    ]
+    summary_model = BOT_CONFIG.get("VOICE_SUMMARY_MODEL") or BOT_CONFIG.get("DEFAULT_MODEL")
+    summary_text, _used_model, _info = await generate_text(
+        prompt="",
+        model=summary_model,
+        prepared_messages=prepared_messages,
+        use_context=False,
+    )
+
+    header = f"🧾 {title} — {getattr(voice_channel, 'name', 'voice')}"
+    if sessions > 1:
+        header += f" (сессий: {sessions})"
+    return f"{header}\n{summary_text.strip()}"
+
+
 def _collect_interval_entries(
     sink: discord.sinks.Sink,
     tail_seconds: float,
@@ -971,6 +1196,8 @@ async def process_voice_log_sink(
         ]
 
     try:
+        if items:
+            await _send_discord_transcript(channel, items)
         if items or debug_lines:
             message_parts: list[str] = []
             if items:
@@ -990,6 +1217,10 @@ async def process_voice_log_sink(
                 message_text = message_text[: max_len - 20].rstrip() + "\n…(truncated)"
             await _send_admin_voice_log(message_text, audio_files=pending_audio_files)
     finally:
+        try:
+            await _maybe_send_daily_summary(channel)
+        except Exception as exc:
+            logger.warning("Daily summary failure: %s", exc)
         for audio in pending_audio_files:
             path = audio.get("path")
             if path and os.path.exists(path):
@@ -1012,12 +1243,40 @@ async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
     interval = int(BOT_CONFIG.get("VOICE_LOG_INTERVAL_SECONDS", 10))
     max_total = int(BOT_CONFIG.get("VOICE_LOG_MAX_SEGMENT_SECONDS", 60))
     tail_seconds = float(BOT_CONFIG.get("VOICE_LOG_PAUSE_TAIL_SECONDS", 0.6))
+    auto_leave_seconds = int(BOT_CONFIG.get("VOICE_AUTO_LEAVE_SECONDS", 60))
+    empty_since: datetime | None = None
     while voice_client and voice_client.is_connected():
+        channel = getattr(voice_client, "channel", None)
+        humans = count_humans_in_voice(channel) if channel else 0
+        if channel:
+            members = getattr(channel, "members", None) or []
+            logger.info(
+                "Voice log loop humans=%s members=%s channel=%s",
+                humans,
+                ",".join(str(getattr(m, "id", "unknown")) for m in members),
+                getattr(channel, "id", "unknown"),
+            )
+        if humans == 0:
+            if empty_since is None:
+                empty_since = datetime.now()
+            elif (datetime.now() - empty_since).total_seconds() >= auto_leave_seconds:
+                try:
+                    guild = getattr(voice_client, "guild", None)
+                    if guild:
+                        cancel_voice_log_task(guild.id)
+                        set_last_voice_channel(str(guild.id), None)
+                    await voice_client.disconnect()
+                except Exception as exc:
+                    logger.warning("Failed to auto-leave (loop fallback): %s", exc)
+                return
+        else:
+            empty_since = None
+
         recording = bool(getattr(voice_client, "recording", False))
         logger.info(
             "Voice log loop tick guild=%s channel=%s recording=%s",
             getattr(getattr(voice_client, "guild", None), "id", "unknown"),
-            getattr(getattr(voice_client, "channel", None), "id", "unknown"),
+            getattr(channel, "id", "unknown"),
             recording,
         )
         if recording:

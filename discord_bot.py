@@ -15,12 +15,13 @@ from discord_app.constants import COMMAND_PREFIXES
 from discord_app.join_requests import ensure_join_request_task
 from discord_app.messages import register_message_handlers
 from discord_app.runtime import init_runtime
+from discord_app.utils import count_humans_in_voice
 from discord_app.voice_control import connect_voice_channel, sync_discord_voice_channels
 from discord_app.voice_log import ensure_voice_log_task
 from discord_app.voice_state import register_voice_state_handlers
 from discord_selftest import register_discord_selftest
 from services.generation import check_model_availability, init_client, refresh_models_from_api
-from services.memory import get_last_voice_channel, init_db
+from services.memory import get_last_voice_channel, init_db, set_last_voice_channel
 from utils.helpers import resolve_system_prompt
 
 load_dotenv()
@@ -134,6 +135,9 @@ async def on_ready() -> None:
         except (TypeError, ValueError):
             channel = None
         if channel is None or channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+            continue
+        if count_humans_in_voice(channel) == 0:
+            set_last_voice_channel(str(guild.id), None)
             continue
         voice_client = guild.voice_client
         if voice_client and voice_client.is_connected():

@@ -2,15 +2,25 @@ import asyncio
 import logging
 import os
 import shutil
+from datetime import datetime, timedelta
 
 import discord
 from discord.ext import commands
 
+from config import BOT_CONFIG
 from discord_app.utils import build_discord_help_message, build_start_message
 from discord_app.voice_control import connect_voice_channel
-from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task
+from discord_app.notifications import send_telegram_notification
+from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task, generate_voice_summary_for_range
 from services.tts import synthesize_speech
-from services.memory import set_discord_autojoin, set_discord_autojoin_announce_sent, set_last_voice_channel, set_voice_auto_reply
+from services.memory import (
+    get_last_voice_channel,
+    set_discord_autojoin,
+    set_discord_autojoin_announce_sent,
+    set_last_voice_channel,
+    set_voice_auto_reply,
+    set_voice_transcripts_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +208,93 @@ def register_commands(bot: commands.Bot) -> None:
         @bot.slash_command(name="say", description="Озвучить текст в голосовом канале")
         async def say_voice_slash(ctx: discord.ApplicationContext, text: str) -> None:
             await _play_tts_audio(ctx, text)
+
+    async def _toggle_transcripts(
+        ctx: commands.Context | discord.ApplicationContext,
+        enabled: bool,
+    ) -> None:
+        if not ctx.guild:
+            await _reply_ctx(ctx, "Команда доступна только на сервере.", False)
+            return
+
+        channel_id = get_last_voice_channel(str(ctx.guild.id))
+        if not channel_id:
+            await _reply_ctx(ctx, "Сначала подключись к голосовому каналу.", False)
+            return
+
+        set_voice_transcripts_enabled(channel_id, enabled)
+        status = "включена" if enabled else "отключена"
+        await _reply_ctx(ctx, f"Отправка транскрипций {status}.", False)
+
+    @bot.command(name="transcripts_off")
+    async def transcripts_off_command(ctx: commands.Context) -> None:
+        """Disable transcript forwarding to Discord text channel."""
+        await _toggle_transcripts(ctx, False)
+
+    @bot.command(name="transcripts_on")
+    async def transcripts_on_command(ctx: commands.Context) -> None:
+        """Enable transcript forwarding to Discord text channel."""
+        await _toggle_transcripts(ctx, True)
+
+    if hasattr(bot, "slash_command"):
+        @bot.slash_command(name="transcripts_off", description="Отключить отправку транскрипций")
+        async def transcripts_off_slash(ctx: discord.ApplicationContext) -> None:
+            await _toggle_transcripts(ctx, False)
+
+        @bot.slash_command(name="transcripts_on", description="Включить отправку транскрипций")
+        async def transcripts_on_slash(ctx: discord.ApplicationContext) -> None:
+            await _toggle_transcripts(ctx, True)
+
+    async def _send_summary_now(
+        ctx: commands.Context | discord.ApplicationContext,
+    ) -> None:
+        responded = await _reply_ctx(ctx, "Готовлю саммари...", False)
+        if not ctx.guild:
+            await _reply_ctx(ctx, "Команда доступна только на сервере.", responded)
+            return
+
+        channel = None
+        channel_id = get_last_voice_channel(str(ctx.guild.id))
+        if channel_id:
+            channel = ctx.guild.get_channel(int(channel_id))
+        if channel is None:
+            voice_state = getattr(getattr(ctx, "author", None), "voice", None)
+            channel = getattr(voice_state, "channel", None) if voice_state else None
+            if channel:
+                set_last_voice_channel(str(ctx.guild.id), str(channel.id))
+        if channel is None:
+            await _reply_ctx(ctx, "Сначала подключись к голосовому каналу.", responded)
+            return
+
+        if channel is None or channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
+            await _reply_ctx(ctx, "Не нашёл голосовой канал для саммари.", responded)
+            return
+
+        minutes = int(BOT_CONFIG.get("VOICE_SUMMARY_LIVE_MINUTES", 120) or 120)
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(minutes=minutes)
+        summary = await generate_voice_summary_for_range(
+            channel,
+            start_dt,
+            end_dt,
+            f"Саммари за последние {minutes} мин",
+        )
+        if not summary:
+            await _reply_ctx(ctx, "Нет разговоров для саммари.", responded)
+            return
+
+        await send_telegram_notification(summary, discord_channel_id=str(channel.id))
+        await _reply_ctx(ctx, "Саммари отправлено.", responded)
+
+    @bot.command(name="summary_now")
+    async def summary_now_command(ctx: commands.Context) -> None:
+        """Generate and send summary immediately."""
+        await _send_summary_now(ctx)
+
+    if hasattr(bot, "slash_command"):
+        @bot.slash_command(name="summary_now", description="Сделать саммари голосового чата сейчас")
+        async def summary_now_slash(ctx: discord.ApplicationContext) -> None:
+            await _send_summary_now(ctx)
 
     @bot.command(name="autojoin_on")
     async def autojoin_on_command(ctx: commands.Context) -> None:

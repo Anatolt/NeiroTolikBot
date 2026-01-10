@@ -21,6 +21,12 @@ from handlers.commands import (
     models_voice_log_command,
     tts_voices_command,
     models_free_callback,
+    models_large_context_callback,
+    models_paid_callback,
+    models_pic_callback,
+    models_specialized_callback,
+    set_model_number_command,
+    set_pic_model_number_command,
     set_text_model_command,
     set_voice_model_command,
     set_voice_log_model_command,
@@ -179,6 +185,12 @@ async def main() -> None:
     application.add_handler(CommandHandler("set_voice_log_model", set_voice_log_model_command))
     application.add_handler(CommandHandler("set_pic_model", set_pic_model_command))
     application.add_handler(CallbackQueryHandler(models_free_callback, pattern="^models_free:page:"))
+    application.add_handler(CallbackQueryHandler(models_paid_callback, pattern="^models_paid:page:"))
+    application.add_handler(CallbackQueryHandler(models_large_context_callback, pattern="^models_large_context:page:"))
+    application.add_handler(CallbackQueryHandler(models_pic_callback, pattern="^models_pic:page:"))
+    application.add_handler(CallbackQueryHandler(models_specialized_callback, pattern="^models_specialized:page:"))
+    application.add_handler(MessageHandler(filters.Regex(r"^/set_model_\d+(?:@\w+)?$"), set_model_number_command))
+    application.add_handler(MessageHandler(filters.Regex(r"^/set_pic_model_\d+(?:@\w+)?$"), set_pic_model_number_command))
     application.add_handler(CommandHandler("consilium", consilium_command))
     application.add_handler(CommandHandler("selftest", selftest_command))
     application.add_handler(CommandHandler("header_on", header_on_command))

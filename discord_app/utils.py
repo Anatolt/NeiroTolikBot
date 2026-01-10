@@ -42,6 +42,9 @@ def build_discord_help_message() -> str:
         "• /join — подключиться к голосовому каналу, где вы сейчас\n"
         "• /leave — выйти из голосового канала\n"
         "• /say — озвучить текст в голосовом канале\n"
+        "• /transcripts_on — включить отправку транскрипций\n"
+        "• /transcripts_off — отключить отправку транскрипций\n"
+        "• /summary_now — сделать саммари голосового чата сейчас\n"
         "• /autojoin_on — включить автоподключение к голосу\n"
         "• /autojoin_off — отключить автоподключение к голосу\n\n"
         "В серверах бот отвечает по упоминанию @ИмяБота или с префиксами !/.\n"
@@ -69,6 +72,21 @@ def format_cost_estimate(cost: float | None) -> str:
 def count_humans_in_voice(
     channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
 ) -> int:
+    members = getattr(channel, "members", None)
+    if members is not None:
+        humans = []
+        for member in members:
+            if member.bot:
+                continue
+            if exclude_member_id is not None and member.id == exclude_member_id:
+                continue
+            voice_state = getattr(member, "voice", None)
+            if not voice_state or not voice_state.channel or voice_state.channel.id != channel.id:
+                continue
+            humans.append(member)
+        if humans or members:
+            return len(humans)
+
     guild = getattr(channel, "guild", None)
     if guild:
         count = 0

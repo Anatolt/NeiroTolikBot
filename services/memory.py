@@ -150,6 +150,18 @@ def init_db():
     )
     ''')
 
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS voice_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        guild_id TEXT,
+        channel_id TEXT NOT NULL,
+        summary_date TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        timestamp DATETIME NOT NULL
+    )
+    ''')
+
     # Добавляем недостающие колонки для уже созданных таблиц
     cursor.execute("PRAGMA table_info(user_settings)")
     existing_columns = {row[1] for row in cursor.fetchall()}
@@ -263,6 +275,78 @@ def add_voice_log(
     )
     conn.commit()
     conn.close()
+
+
+def add_voice_summary(
+    platform: str,
+    channel_id: str,
+    summary_date: str,
+    summary: str,
+    guild_id: str | None = None,
+) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO voice_summaries
+        (platform, guild_id, channel_id, summary_date, summary, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            platform,
+            guild_id or "",
+            channel_id,
+            summary_date,
+            summary,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_last_voice_summary_date(platform: str, channel_id: str) -> Optional[str]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT summary_date
+        FROM voice_summaries
+        WHERE platform = ? AND channel_id = ?
+        ORDER BY summary_date DESC
+        LIMIT 1
+        """,
+        (platform, channel_id),
+    )
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+
+def get_voice_logs_for_range(
+    platform: str,
+    channel_id: str,
+    start_ts: str,
+    end_ts: str,
+) -> List[Dict[str, Any]]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT username, text, timestamp, user_id
+        FROM voice_logs
+        WHERE platform = ?
+          AND channel_id = ?
+          AND timestamp >= ?
+          AND timestamp < ?
+        ORDER BY timestamp ASC
+        """,
+        (platform, channel_id, start_ts, end_ts),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 def add_message(chat_id: str, user_id: str, role: str, model: str, text: str, session_id: Optional[str] = None) -> None:
     """Добавление сообщения в историю."""
@@ -672,6 +756,70 @@ def get_voice_log_debug() -> bool:
     if not result:
         return True
     return result[0] not in ("0", "false", "False", "no", "off")
+
+
+def set_voice_transcripts_enabled(channel_id: str, enabled: bool) -> None:
+    """Включает или отключает отправку транскрипций в Discord-текстовый канал."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (f"voice_transcripts_enabled_{channel_id}", "1" if enabled else "0", datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_voice_transcripts_enabled(channel_id: str) -> bool:
+    """Возвращает статус отправки транскрипций в Discord-текстовый канал."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        (f"voice_transcripts_enabled_{channel_id}",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+    if not result:
+        return True
+    return str(result[0]).strip() not in {"0", "false", "False", "no", "off"}
+
+
+def set_voice_summary_enabled(channel_id: str, enabled: bool) -> None:
+    """Включает или отключает ежедневные саммари для голосового канала."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (f"voice_summary_enabled_{channel_id}", "1" if enabled else "0", datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_voice_summary_enabled(channel_id: str) -> bool:
+    """Возвращает статус ежедневных саммари для голосового канала."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        (f"voice_summary_enabled_{channel_id}",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+    if not result:
+        return True
+    return str(result[0]).strip() not in {"0", "false", "False", "no", "off"}
 
 
 def set_tts_voice(voice: str) -> None:
