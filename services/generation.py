@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Tuple
 from openai import AsyncOpenAI
 from config import BOT_CONFIG
 from services.memory import get_history, get_user_summary, save_summary
+from services.analytics import log_image_usage, log_text_usage
 
 logger = logging.getLogger(__name__)
 
@@ -744,13 +745,14 @@ async def _prepare_messages(
 async def generate_text(
     prompt: str,
     model: str,
-    chat_id: str = None,
-    user_id: str = None,
-    search_results: str = None,
+    chat_id: str | None = None,
+    user_id: str | None = None,
+    search_results: str | None = None,
     prepared_messages: List[Dict[str, str]] | None = None,
     context_info: Dict[str, Any] | None = None,
     use_context: bool = True,
     on_model_switch: Callable[[str, str, str | None], Awaitable[None]] | None = None,
+    platform: str | None = None,
 ) -> tuple[str, str, Dict[str, Any]]:
     """
     Генерация текста с помощью OpenRouter API.
@@ -827,6 +829,25 @@ async def generate_text(
                         guard_info,
                     )
                 logger.info(f"Received response from OpenRouter: {result[:100]}...")
+                if platform and chat_id and user_id:
+                    usage = getattr(response, "usage", None)
+                    total_tokens = getattr(usage, "total_tokens", None) if usage else None
+                    prompt_for_usage = prompt
+                    if not prompt_for_usage and messages:
+                        prompt_for_usage = "\n".join(
+                            msg.get("content", "")
+                            for msg in messages
+                            if isinstance(msg, dict) and msg.get("content")
+                        )
+                    log_text_usage(
+                        platform=platform,
+                        chat_id=str(chat_id),
+                        user_id=str(user_id),
+                        model_id=candidate_model,
+                        prompt=prompt_for_usage or "",
+                        response=result,
+                        token_estimate=total_tokens,
+                    )
                 return result, candidate_model, guard_info
             except (AttributeError, IndexError) as e:
                 logger.error(f"Error extracting content from response: {str(e)}")
@@ -904,7 +925,13 @@ async def generate_text(
     return fallback_message, failed_model, guard_info
 
 
-async def translate_prompt(prompt: str, model: str) -> str | None:
+async def translate_prompt(
+    prompt: str,
+    model: str,
+    platform: str | None = None,
+    chat_id: str | None = None,
+    user_id: str | None = None,
+) -> str | None:
     if not prompt or not model:
         return None
 
@@ -931,6 +958,18 @@ async def translate_prompt(prompt: str, model: str) -> str | None:
             return None
 
         translated = response.choices[0].message.content.strip()
+        if translated and platform and chat_id and user_id:
+            usage = getattr(response, "usage", None)
+            total_tokens = getattr(usage, "total_tokens", None) if usage else None
+            log_text_usage(
+                platform=platform,
+                chat_id=str(chat_id),
+                user_id=str(user_id),
+                model_id=model,
+                prompt=prompt,
+                response=translated,
+                token_estimate=total_tokens,
+            )
         return translated or None
     except Exception as exc:
         logger.error("Error translating prompt with model %s: %s", model, exc)
@@ -1076,7 +1115,12 @@ async def _generate_image_piapi(prompt: str, model: str) -> str | None:
         return None
 
 
-async def generate_image(prompt: str) -> str | None:
+async def generate_image(
+    prompt: str,
+    platform: str | None = None,
+    chat_id: str | None = None,
+    user_id: str | None = None,
+) -> str | None:
     """Генерация изображения через PiAPI.ai или ImageRouter."""
     model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
     if not model:
@@ -1084,6 +1128,16 @@ async def generate_image(prompt: str) -> str | None:
         return None
 
     if model.lower() in _get_image_router_models():
-        return await _generate_image_imagerouter(prompt, model)
+        image_url = await _generate_image_imagerouter(prompt, model)
+    else:
+        image_url = await _generate_image_piapi(prompt, model)
 
-    return await _generate_image_piapi(prompt, model)
+    if image_url and platform and chat_id and user_id:
+        log_image_usage(
+            platform=platform,
+            chat_id=str(chat_id),
+            user_id=str(user_id),
+            model_id=model,
+            prompt=prompt,
+        )
+    return image_url

@@ -71,7 +71,8 @@ def register_commands(bot: commands.Bot) -> None:
             await _reply_ctx(ctx, "Команда доступна только на сервере.", responded)
             return
 
-        voice_state = getattr(ctx.author, "voice", None)
+        actor = getattr(ctx, "author", None) or getattr(ctx, "user", None)
+        voice_state = getattr(actor, "voice", None)
         if not voice_state or not voice_state.channel:
             await _reply_ctx(ctx, "Сначала зайди в голосовой канал.", responded)
             return
@@ -88,7 +89,12 @@ def register_commands(bot: commands.Bot) -> None:
 
         responded = await _reply_ctx(ctx, "🗣️ Озвучиваю...", responded)
 
-        audio_path, error = await synthesize_speech(text)
+        audio_path, error = await synthesize_speech(
+            text,
+            platform="discord",
+            chat_id=str(getattr(ctx.channel, "id", "")),
+            user_id=str(getattr(actor, "id", "")),
+        )
         if error or not audio_path:
             await _reply_ctx(ctx, f"Ошибка TTS: {error}", responded)
             return

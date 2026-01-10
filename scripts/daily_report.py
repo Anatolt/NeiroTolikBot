@@ -28,7 +28,8 @@ def _build_report_section(title: str, summary: dict) -> str:
         f"Всего: {_format_money(summary['total_cost'])}\n"
         f"Текст: {_format_money(summary['text_cost'])}\n"
         f"Картинки: {_format_money(summary['image_cost'])}\n"
-        f"STT: {_format_money(summary['stt_cost'])}"
+        f"STT: {_format_money(summary['stt_cost'])}\n"
+        f"TTS: {_format_money(summary.get('tts_cost', 0.0))}"
     )
 
 

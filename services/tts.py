@@ -7,6 +7,7 @@ from openai import AsyncOpenAI
 
 from config import BOT_CONFIG
 from services.memory import get_tts_voice
+from services.analytics import log_tts_usage
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,12 @@ def _get_client() -> Optional[AsyncOpenAI]:
     return _client
 
 
-async def synthesize_speech(text: str) -> Tuple[Optional[str], Optional[str]]:
+async def synthesize_speech(
+    text: str,
+    platform: str | None = None,
+    chat_id: str | None = None,
+    user_id: str | None = None,
+) -> Tuple[Optional[str], Optional[str]]:
     if not text:
         return None, "Empty text"
 
@@ -54,6 +60,14 @@ async def synthesize_speech(text: str) -> Tuple[Optional[str], Optional[str]]:
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
             tmp_file.write(audio_bytes)
+            if platform and chat_id and user_id:
+                log_tts_usage(
+                    platform=platform,
+                    chat_id=str(chat_id),
+                    user_id=str(user_id),
+                    model_id=model,
+                    text=text,
+                )
             return tmp_file.name, None
     except Exception as exc:
         logger.warning("Failed to synthesize speech: %s", exc)

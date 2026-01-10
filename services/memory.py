@@ -227,7 +227,8 @@ def get_usage_summary(
             SUM(estimated_cost) AS total_cost,
             SUM(CASE WHEN event_type = 'text' THEN estimated_cost ELSE 0 END) AS text_cost,
             SUM(CASE WHEN event_type = 'image' THEN estimated_cost ELSE 0 END) AS image_cost,
-            SUM(CASE WHEN event_type = 'stt' THEN estimated_cost ELSE 0 END) AS stt_cost
+            SUM(CASE WHEN event_type = 'stt' THEN estimated_cost ELSE 0 END) AS stt_cost,
+            SUM(CASE WHEN event_type = 'tts' THEN estimated_cost ELSE 0 END) AS tts_cost
         FROM usage_events
         WHERE platform = ?
           AND timestamp >= ?
@@ -235,7 +236,7 @@ def get_usage_summary(
         """,
         (platform, start_ts, end_ts),
     )
-    row = cursor.fetchone() or (0, 0, 0, 0, 0, 0)
+    row = cursor.fetchone() or (0, 0, 0, 0, 0, 0, 0)
     conn.close()
     return {
         "users": int(row[0] or 0),
@@ -244,6 +245,7 @@ def get_usage_summary(
         "text_cost": float(row[3] or 0),
         "image_cost": float(row[4] or 0),
         "stt_cost": float(row[5] or 0),
+        "tts_cost": float(row[6] or 0),
     }
 
 

@@ -167,6 +167,7 @@ async def generate_single_model_response(
     model: str,
     chat_id: Optional[str],
     user_id: Optional[str],
+    platform: Optional[str] = None,
     timeout: int = 60
 ) -> Dict:
     """
@@ -188,6 +189,7 @@ async def generate_single_model_response(
                 user_id,
                 prepared_messages=prepared_messages,
                 context_info=guard_info,
+                platform=platform,
             ),
             timeout=timeout
         )
@@ -220,7 +222,8 @@ async def generate_consilium_responses(
     prompt: str,
     models: List[str],
     chat_id: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> List[Dict]:
     """
     Параллельно генерирует ответы от нескольких моделей.
@@ -259,7 +262,7 @@ async def generate_consilium_responses(
     
     # Создаем задачи для параллельного выполнения
     tasks = [
-        generate_single_model_response(prompt, model, chat_id, user_id, timeout)
+        generate_single_model_response(prompt, model, chat_id, user_id, platform, timeout)
         for model in models
     ]
     

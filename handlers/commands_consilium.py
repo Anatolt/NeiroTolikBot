@@ -5,7 +5,6 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import BOT_CONFIG
-from services.analytics import log_text_usage
 from services.consilium import (
     parse_consilium_request,
     select_default_consilium_models,
@@ -95,7 +94,7 @@ async def execute_consilium_request(
         add_message(chat_id, user_id, "user", models[0], prompt)
 
     start_time = time.time()
-    results = await generate_consilium_responses(prompt, models, chat_id, user_id)
+    results = await generate_consilium_responses(prompt, models, chat_id, user_id, platform="telegram")
     execution_time = time.time() - start_time
     formatted_messages = format_consilium_results(results, execution_time)
 
@@ -108,17 +107,6 @@ async def execute_consilium_request(
         for result in results:
             if result.get("success") and result.get("response"):
                 add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
-
-    for result in results:
-        if result.get("success") and result.get("response"):
-            log_text_usage(
-                platform="telegram",
-                chat_id=str(chat_id),
-                user_id=str(user_id),
-                model_id=result.get("model"),
-                prompt=prompt,
-                response=result.get("response"),
-            )
 
     max_length = 4000
     for msg in formatted_messages:

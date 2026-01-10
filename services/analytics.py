@@ -38,15 +38,46 @@ def log_text_usage(
     model_id: Optional[str],
     prompt: str,
     response: str,
+    token_estimate: Optional[float] = None,
 ) -> None:
     char_count = len(prompt or "") + len(response or "")
-    tokens = _estimate_tokens(char_count)
+    tokens = token_estimate if token_estimate is not None else _estimate_tokens(char_count)
     cost = _estimate_text_cost(tokens, model_id)
     log_usage_event(
         platform=platform,
         chat_id=chat_id,
         user_id=user_id,
         event_type="text",
+        model=model_id,
+        char_count=char_count,
+        token_estimate=tokens,
+        estimated_cost=cost,
+        is_free=_is_free_model(model_id),
+    )
+
+
+def log_tts_usage(
+    platform: str,
+    chat_id: str,
+    user_id: str,
+    model_id: Optional[str],
+    text: str,
+) -> None:
+    char_count = len(text or "")
+    tokens = _estimate_tokens(char_count)
+    price = BOT_CONFIG.get("TTS_COST_PER_1K_CHARS")
+    if price is None:
+        cost = 0.0
+    else:
+        try:
+            cost = float(price) * (char_count / 1000.0)
+        except (TypeError, ValueError):
+            cost = 0.0
+    log_usage_event(
+        platform=platform,
+        chat_id=chat_id,
+        user_id=user_id,
+        event_type="tts",
         model=model_id,
         char_count=char_count,
         token_estimate=tokens,

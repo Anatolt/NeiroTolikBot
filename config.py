@@ -78,6 +78,7 @@ BOT_CONFIG = {
         "nova",
         "shimmer",
     ],
+    "TTS_COST_PER_1K_CHARS": None,
 
     # Usage cost estimates (rough)
     "TEXT_COST_PER_1K_TOKENS": 0.2,

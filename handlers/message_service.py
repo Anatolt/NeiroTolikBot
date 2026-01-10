@@ -12,7 +12,6 @@ from services.consilium import (
     parse_consilium_request,
     select_default_consilium_models,
 )
-from services.analytics import log_image_usage, log_text_usage
 from services.generation import CATEGORY_TITLES, build_models_messages, generate_image, generate_text, translate_prompt
 from services.memory import (
     add_message,
@@ -346,7 +345,13 @@ async def execute_routed_request(
         else:
             translation_model = preferred_model or BOT_CONFIG.get("DEFAULT_MODEL")
 
-        translated_prompt = await translate_prompt(content, translation_model)
+        translated_prompt = await translate_prompt(
+            content,
+            translation_model,
+            platform=request.platform,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
         if not translated_prompt:
             translated_prompt = content
             responses.append(
@@ -362,16 +367,14 @@ async def execute_routed_request(
         prompt_lines.append("Сменить генератор: /models_pic → /set_pic_model_<номер>")
         responses.append(MessageResponse(text="\n".join(prompt_lines)))
 
-        image_url = await generate_image(translated_prompt)
+        image_url = await generate_image(
+            translated_prompt,
+            platform=request.platform,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
         if image_url:
             responses.append(MessageResponse(photo_url=image_url))
-            log_image_usage(
-                platform=request.platform,
-                chat_id=str(chat_id),
-                user_id=str(user_id),
-                model_id=image_model,
-                prompt=translated_prompt,
-            )
         else:
             responses.append(MessageResponse(text="Не удалось сгенерировать изображение."))
     elif request_type == "search":
@@ -397,14 +400,7 @@ async def execute_routed_request(
             search_results=search_results,
             use_context=use_context,
             on_model_switch=notify_model_switch,
-        )
-        log_text_usage(
             platform=request.platform,
-            chat_id=str(chat_id),
-            user_id=str(user_id),
-            model_id=used_model,
-            prompt=prompt_with_search,
-            response=response_text,
         )
 
         responses.extend(MessageResponse(text=notice) for notice in _build_context_guard_notices(context_info))
@@ -461,10 +457,11 @@ async def execute_routed_request(
         search_query_response, _used_model, _context_info = await generate_text(
             search_prompt,
             model_name,
-            None,
-            None,
+            chat_id,
+            user_id,
             use_context=False,
             on_model_switch=notify_model_switch,
+            platform=request.platform,
         )
         search_query = search_query_response.strip().strip('"').strip("'")
 
@@ -489,14 +486,7 @@ async def execute_routed_request(
             search_results=search_results,
             use_context=use_context,
             on_model_switch=notify_model_switch,
-        )
-        log_text_usage(
             platform=request.platform,
-            chat_id=str(chat_id),
-            user_id=str(user_id),
-            model_id=used_model,
-            prompt=final_prompt,
-            response=response_text,
         )
 
         responses.extend(MessageResponse(text=notice) for notice in _build_context_guard_notices(context_info))
@@ -552,7 +542,13 @@ async def execute_routed_request(
 
         start_time = time.time()
 
-        results = await generate_consilium_responses(prompt, models, chat_id, user_id)
+        results = await generate_consilium_responses(
+            prompt,
+            models,
+            chat_id,
+            user_id,
+            platform=request.platform,
+        )
 
         execution_time = time.time() - start_time
 
@@ -563,14 +559,6 @@ async def execute_routed_request(
                 continue
             if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
                 add_message(chat_id, user_id, "assistant", result.get("model"), result.get("response"))
-            log_text_usage(
-                platform=request.platform,
-                chat_id=str(chat_id),
-                user_id=str(user_id),
-                model_id=result.get("model"),
-                prompt=prompt,
-                response=result.get("response"),
-            )
 
         max_length = 4000
         for msg in formatted_messages:
@@ -615,14 +603,7 @@ async def execute_routed_request(
             user_id,
             use_context=use_context,
             on_model_switch=notify_model_switch,
-        )
-        log_text_usage(
             platform=request.platform,
-            chat_id=str(chat_id),
-            user_id=str(user_id),
-            model_id=used_model,
-            prompt=content,
-            response=response_text,
         )
 
         responses.extend(MessageResponse(text=notice) for notice in _build_context_guard_notices(context_info))

@@ -746,6 +746,9 @@ async def generate_voice_summary_for_range(
         model=summary_model,
         prepared_messages=prepared_messages,
         use_context=False,
+        platform="discord",
+        chat_id=str(getattr(voice_channel, "id", "")),
+        user_id="voice_summary",
     )
 
     header = f"{title} — {getattr(voice_channel, 'name', 'voice')}"

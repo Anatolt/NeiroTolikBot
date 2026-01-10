@@ -242,7 +242,12 @@ async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     audio_path = None
     ogg_path = None
     try:
-        audio_path, error = await synthesize_speech(text)
+        audio_path, error = await synthesize_speech(
+            text,
+            platform="telegram",
+            chat_id=str(update.effective_chat.id),
+            user_id=str(update.effective_user.id),
+        )
         if error or not audio_path:
             await message.reply_text(f"Ошибка TTS: {error}")
             return
