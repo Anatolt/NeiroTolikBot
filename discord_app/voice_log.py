@@ -730,7 +730,8 @@ async def generate_voice_summary_for_range(
         "Сделай краткое саммари разговора из голосового чата. "
         "Укажи основные темы и события. "
         f"Если было несколько отдельных диалогов с паузами больше {gap_minutes} минут, "
-        "обязательно отметь это в саммари и укажи количество сессий."
+        "обязательно отметь это в саммари и укажи количество сессий. "
+        "Пиши без Markdown-форматирования и уложись в одно сообщение Telegram."
     )
     if truncated:
         summary_prompt += " Источник урезан по длине, укажи это, если заметно."
@@ -747,10 +748,25 @@ async def generate_voice_summary_for_range(
         use_context=False,
     )
 
-    header = f"🧾 {title} — {getattr(voice_channel, 'name', 'voice')}"
+    header = f"{title} — {getattr(voice_channel, 'name', 'voice')}"
     if sessions > 1:
         header += f" (сессий: {sessions})"
-    return f"{header}\n{summary_text.strip()}"
+    summary_text = _sanitize_summary_text(summary_text)
+    combined = f"{header}\n{summary_text}" if summary_text else header
+    max_chars = int(BOT_CONFIG.get("VOICE_SUMMARY_TELEGRAM_MAX_CHARS", 3800) or 3800)
+    if len(combined) > max_chars:
+        combined = combined[: max_chars - 1].rstrip() + "…"
+    return combined
+
+
+def _sanitize_summary_text(text: str) -> str:
+    cleaned = (text or "").replace("\r", "\n").strip()
+    for token in ("**", "__", "*", "_", "`"):
+        cleaned = cleaned.replace(token, "")
+    for token in ("###", "##", "#", ">"):
+        cleaned = cleaned.replace(token, "")
+    lines = [line.strip() for line in cleaned.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def _collect_interval_entries(
