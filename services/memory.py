@@ -532,7 +532,13 @@ def get_telegram_chats() -> List[Dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    cursor.execute("SELECT chat_id, title, chat_type FROM telegram_chats ORDER BY updated_at DESC")
+    cursor.execute(
+        """
+        SELECT chat_id, title, chat_type
+        FROM telegram_chats
+        ORDER BY COALESCE(title, ''), chat_id
+        """
+    )
     rows = cursor.fetchall()
 
     conn.close()
