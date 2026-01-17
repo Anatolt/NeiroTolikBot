@@ -126,6 +126,7 @@ NeiroTolikBot/
 - `/flow` — показать текущие связи Discord → Telegram
 - `/setflow` — выбрать связь Discord → Telegram (без аргументов покажет списки; пример: `/setflow 2 C`)
 - `/unsetflow` — удалить связь (без аргументов покажет список с римскими цифрами; пример: `/unsetflow ii`)
+- `/user_profile [chat_id] <user_id>` — показать профиль пользователя (админ)
 - `/models_voice` — список моделей распознавания речи
 - `/set_voice_model <номер>` — выбрать модель распознавания речи
 - `/voice_send_raw` — слать аудио целиком, без нарезки (дороже, лимит 25MB)
@@ -136,7 +137,7 @@ NeiroTolikBot/
 
 ### Запуск как systemd-сервис
 
-В репозитории уже есть файл `neirotolikbot.service`.
+В репозитории уже есть файл `neirotolikbot.service` (на сервере de используется Docker).
 
 ```bash
 sudo cp neirotolikbot.service /etc/systemd/system/
@@ -147,16 +148,21 @@ sudo systemctl start neirotolikbot.service
 
 Логи: `sudo journalctl -u neirotolikbot.service -f`
 
-## Запуск в Docker с ограничением памяти
+## Запуск в Docker
 
-Для работы в окружениях с ограниченными ресурсами можно использовать контейнер с лимитом памяти 150 МБ.
+Бот запускается в одном контейнере через `start-bot.sh` (внутри поднимаются `tbot.py` и `discord_bot.py`).
 
-1. Постройте образ и запустите через Docker Compose (файл `docker-compose.yml` уже настроен на лимит памяти):
+1. Постройте образ и запустите через Docker Compose (в `docker-compose.yml` лимит памяти 1 GB):
    ```bash
-   docker compose up --build -d
+   docker-compose up --build -d
    ```
 
-2. Или запустите вручную, задав ограничение по памяти:
+2. Перезапуск контейнера:
+   ```bash
+   docker-compose restart
+   ```
+
+3. Или запустите вручную, задав ограничение по памяти:
    ```bash
    docker build -t neirotolikbot .
    docker run --rm -d --env-file .env --memory=150m --name neirotolikbot neirotolikbot
