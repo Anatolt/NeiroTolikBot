@@ -1,6 +1,6 @@
 """Thin re-export layer for command handlers after refactor."""
 
-from handlers.commands_admin import ADMIN_COMMANDS_TEXT, admin_help_command
+from handlers.commands_admin import ADMIN_COMMANDS_TEXT, admin_help_command, user_profile_command
 from handlers.commands_consilium import consilium_command, execute_consilium_request
 from handlers.commands_core import (
     admin_command,
@@ -66,6 +66,7 @@ __all__ = [
     "MODELS_HINT_TEXT",
     "admin_command",
     "admin_help_command",
+    "user_profile_command",
     "build_models_messages",
     "clear_memory_command",
     "consilium_command",

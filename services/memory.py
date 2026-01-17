@@ -122,6 +122,18 @@ def init_db():
     ''')
 
     cursor.execute('''
+    CREATE TABLE IF NOT EXISTS user_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_name TEXT,
+        updated_at DATETIME NOT NULL,
+        UNIQUE(platform, chat_id, user_id)
+    )
+    ''')
+
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS usage_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         platform TEXT NOT NULL,
@@ -171,6 +183,29 @@ def init_db():
         cursor.execute("ALTER TABLE user_settings ADD COLUMN preferred_model TEXT")
     if "voice_auto_reply" not in existing_columns:
         cursor.execute("ALTER TABLE user_settings ADD COLUMN voice_auto_reply BOOLEAN DEFAULT 0")
+
+    cursor.execute("PRAGMA table_info(messages)")
+    existing_message_columns = {row[1] for row in cursor.fetchall()}
+    if "user_name" in existing_message_columns:
+        cursor.execute("ALTER TABLE messages RENAME TO messages_old")
+        cursor.execute('''
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            model TEXT NOT NULL,
+            text TEXT NOT NULL,
+            timestamp DATETIME NOT NULL,
+            session_id TEXT,
+            is_summarized BOOLEAN DEFAULT 0
+        )
+        ''')
+        cursor.execute(
+            "INSERT INTO messages (id, chat_id, user_id, role, model, text, timestamp, session_id, is_summarized) "
+            "SELECT id, chat_id, user_id, role, model, text, timestamp, session_id, is_summarized FROM messages_old"
+        )
+        cursor.execute("DROP TABLE messages_old")
 
     conn.commit()
     conn.close()
@@ -380,7 +415,14 @@ def get_recent_voice_logs(
     conn.close()
     return list(reversed([dict(row) for row in rows]))
 
-def add_message(chat_id: str, user_id: str, role: str, model: str, text: str, session_id: Optional[str] = None) -> None:
+def add_message(
+    chat_id: str,
+    user_id: str,
+    role: str,
+    model: str,
+    text: str,
+    session_id: Optional[str] = None,
+) -> None:
     """Добавление сообщения в историю."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -538,6 +580,48 @@ def get_all_admins() -> List[Dict[str, Any]]:
     conn.close()
     
     return [dict(row) for row in rows]
+
+def upsert_user_profile(platform: str, chat_id: str, user_id: str, user_name: Optional[str]) -> None:
+    """Сохраняет имя пользователя (обновляет только при изменении)."""
+    if not user_name:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT user_name FROM user_profiles WHERE platform = ? AND chat_id = ? AND user_id = ?",
+        (platform, chat_id, user_id),
+    )
+    row = cursor.fetchone()
+    if row and row[0] == user_name:
+        conn.close()
+        return
+
+    cursor.execute(
+        """
+        INSERT INTO user_profiles (platform, chat_id, user_id, user_name, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(platform, chat_id, user_id)
+        DO UPDATE SET user_name=excluded.user_name, updated_at=excluded.updated_at
+        """,
+        (platform, chat_id, user_id, user_name, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+def get_user_profile(platform: str, chat_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """Возвращает профиль пользователя из памяти."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT platform, chat_id, user_id, user_name, updated_at FROM user_profiles WHERE platform = ? AND chat_id = ? AND user_id = ?",
+        (platform, chat_id, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 def upsert_telegram_chat(chat_id: str, title: Optional[str], chat_type: Optional[str]) -> None:
     """Сохраняет или обновляет информацию о чате Telegram."""

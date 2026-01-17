@@ -72,21 +72,19 @@ def format_cost_estimate(cost: float | None) -> str:
 def count_humans_in_voice(
     channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
 ) -> int:
-    members = getattr(channel, "members", None)
-    if members is not None:
-        humans = []
-        for member in members:
-            if member.bot:
-                continue
-            if exclude_member_id is not None and member.id == exclude_member_id:
-                continue
-            voice_state = getattr(member, "voice", None)
-            if not voice_state or not voice_state.channel or voice_state.channel.id != channel.id:
-                continue
-            humans.append(member)
-        if humans or members:
-            return len(humans)
+    members = getattr(channel, "members", None) or []
+    members_count = 0
+    for member in members:
+        if member.bot:
+            continue
+        if exclude_member_id is not None and member.id == exclude_member_id:
+            continue
+        voice_state = getattr(member, "voice", None)
+        if not voice_state or not voice_state.channel or voice_state.channel.id != channel.id:
+            continue
+        members_count += 1
 
+    voice_states_count = None
     guild = getattr(channel, "guild", None)
     if guild:
         count = 0
@@ -106,13 +104,12 @@ def count_humans_in_voice(
             if member and member.bot:
                 continue
             count += 1
-        return count
-    members = getattr(channel, "members", None) or []
-    return sum(
-        1
-        for member in members
-        if not member.bot and (exclude_member_id is None or member.id != exclude_member_id)
-    )
+        voice_states_count = count
+
+    if voice_states_count is not None:
+        return max(members_count, voice_states_count)
+
+    return members_count
 
 
 def pick_announcement_channel(guild: discord.Guild) -> discord.TextChannel | None:

@@ -10,6 +10,7 @@ from handlers.commands import (
     clear_memory_command,
     help_command,
     admin_help_command,
+    user_profile_command,
     models_all_command,
     models_command,
     models_free_command,
@@ -170,6 +171,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("admin_help", admin_help_command))
+    application.add_handler(CommandHandler("user_profile", user_profile_command))
     application.add_handler(CommandHandler("models", models_command))
     application.add_handler(CommandHandler("models_free", models_free_command))
     application.add_handler(CommandHandler("models_paid", models_paid_command))

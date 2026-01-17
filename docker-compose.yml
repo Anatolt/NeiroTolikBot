@@ -5,5 +5,8 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    mem_limit: 150m
-    command: ["python", "tbot.py"]
+    mem_limit: 1g
+    volumes:
+      - ./data:/app/data
+
+    command: ["bash", "/app/start-bot.sh"]

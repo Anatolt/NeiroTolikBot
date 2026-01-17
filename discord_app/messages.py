@@ -17,7 +17,7 @@ from discord_app.utils import (
 )
 from handlers.message_service import MessageProcessingRequest, process_message_request
 from services.analytics import log_stt_usage
-from services.memory import create_discord_join_request, get_voice_auto_reply
+from services.memory import create_discord_join_request, get_voice_auto_reply, upsert_user_profile
 from services.speech_to_text import estimate_transcription_cost, transcribe_audio, trim_silence
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,11 @@ _pending_voice_files: dict[tuple[str, str], dict] = {}
 
 async def _send_responses(message: discord.Message, clean_content: str) -> None:
     bot = get_bot()
+    user_name = None
+    if message.author:
+        user_name = message.author.display_name or str(message.author)
+        upsert_user_profile("discord", str(message.channel.id), str(message.author.id), user_name)
+
     request = MessageProcessingRequest(
         text=clean_content,
         chat_id=str(message.channel.id),

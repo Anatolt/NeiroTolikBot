@@ -14,6 +14,7 @@ from services.memory import (
     get_pending_discord_join_requests,
     is_admin,
     set_discord_join_request_status,
+    upsert_user_profile,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,12 +167,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    user_name = None
+    if message.from_user:
+        user_name = message.from_user.username or message.from_user.full_name
+
+    upsert_user_profile("telegram", chat_id, user_id, user_name)
+
     request = MessageProcessingRequest(
         text=effective_text,
         chat_id=chat_id,
         user_id=user_id,
         bot_username=bot_username,
-        username=message.from_user.username if message.from_user else None,
+        username=user_name,
         platform="telegram",
     )
 
@@ -202,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "chat_id": chat_id,
                 "user_id": user_id,
                 "bot_username": bot_username,
-                "username": message.from_user.username if message.from_user else None,
+                "username": user_name,
             },
             "routed": {
                 "request_type": routed.request_type,

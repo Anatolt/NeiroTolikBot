@@ -13,7 +13,7 @@ from handlers.message_service import (
     process_message_request,
 )
 from handlers.commands import execute_consilium_request
-from services.memory import get_all_admins, get_voice_auto_reply
+from services.memory import get_all_admins, get_voice_auto_reply, upsert_user_profile
 from services.analytics import log_stt_usage
 from services.speech_to_text import estimate_transcription_cost, transcribe_audio, trim_silence
 from config import BOT_CONFIG
@@ -35,12 +35,18 @@ async def _process_voice_transcript(
     if not message:
         return
 
+    user_name = None
+    if message.from_user:
+        user_name = message.from_user.username or message.from_user.full_name
+
+    upsert_user_profile("telegram", str(message.chat_id), str(message.from_user.id), user_name)
+
     request = MessageProcessingRequest(
         text=transcript,
         chat_id=str(message.chat_id),
         user_id=str(message.from_user.id),
         bot_username=context.bot.username,
-        username=message.from_user.username if message.from_user else None,
+        username=user_name,
         platform="telegram",
     )
 
