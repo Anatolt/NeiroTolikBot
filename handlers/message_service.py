@@ -6,6 +6,7 @@ from typing import Awaitable, Callable, List, Optional
 
 from config import BOT_CONFIG
 from handlers.commands import MODELS_HINT_TEXT
+from handlers.commands_core import build_help_text
 from services.consilium import (
     format_consilium_results,
     generate_consilium_responses,
@@ -325,8 +326,7 @@ async def execute_routed_request(
             logger.warning("Failed to send ack message: %s", exc)
 
     if request_type == "help":
-        capabilities = await get_capabilities()
-        responses.extend(MessageResponse(text=part) for part in capabilities)
+        responses.append(MessageResponse(text=build_help_text(request.username)))
     elif request_type == "models_hint":
         responses.append(MessageResponse(text=MODELS_HINT_TEXT))
     elif request_type == "models_category":

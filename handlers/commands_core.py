@@ -82,13 +82,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("Введите пароль администратора:")
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /help - справка по командам."""
-    user = update.effective_user
-    user_mention = user.full_name
+def build_help_text(user_name: str | None = None) -> str:
+    resolved_name = (user_name or "друг").strip() or "друг"
 
-    text = (
-        f"Привет, {user_mention}! Вот список доступных команд:\n\n"
+    return (
+        f"Привет, {resolved_name}! Вот список доступных команд:\n\n"
         f"📝 /new - Начать новый диалог (сохраняет историю для будущего использования)\n"
         f"🧹 /clear - Полностью очистить память бота\n"
         f"❓ /help - Показать эту справку\n"
@@ -108,7 +106,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"• Использовать /models для просмотра списков моделей"
     )
 
-    await update.message.reply_text(text=text)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /help - справка по командам."""
+    user = update.effective_user
+    await update.message.reply_text(text=build_help_text(user.full_name if user else None))
 
 
 async def header_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
