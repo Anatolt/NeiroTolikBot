@@ -12,13 +12,40 @@ from services.memory import (
     add_admin,
     add_message,
     get_latest_pending_discord_join_request,
+    get_miniapp_image_model,
+    get_miniapp_text_model,
     get_pending_discord_join_requests,
+    get_preferred_model,
     is_admin,
     set_discord_join_request_status,
     upsert_user_profile,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _router_target_lines(routed, chat_id: str, user_id: str) -> list[str]:
+    action = routed.request_type
+    suggested = [m for m in (routed.suggested_models or []) if m]
+
+    if action in {"help", "models_hint", "models_category"}:
+        return ["🎯 Куда пойдет запрос: без вызова LLM (служебный ответ)"]
+
+    if action == "consilium":
+        if suggested:
+            return [f"🎯 Куда пойдет запрос: консилиум ({', '.join(suggested)})"]
+        return ["🎯 Куда пойдет запрос: консилиум (модели будут выбраны автоматически)"]
+
+    if action == "image":
+        image_model = get_miniapp_image_model(user_id) or BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+        translation_model = BOT_CONFIG.get("ROUTER_MODEL") or BOT_CONFIG.get("DEFAULT_MODEL")
+        return [
+            f"🎯 Куда пойдет запрос: генерация изображения ({image_model or 'не задана'})",
+            f"📝 Модель перевода промпта: {translation_model or 'не задана'}",
+        ]
+
+    target_model = routed.model or get_preferred_model(chat_id, user_id) or get_miniapp_text_model(user_id) or BOT_CONFIG.get("DEFAULT_MODEL")
+    return [f"🎯 Куда пойдет запрос: {target_model or 'не задана'}"]
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик входящих сообщений."""
@@ -194,13 +221,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         action = routed.request_type
         reason = routed.reason or "без пояснения"
         model_list = ", ".join(routed.suggested_models) if routed.suggested_models else "не указаны"
-        info = (
-            f"🤖 Ответ от LLM роутера ({router_model}).\n"
-            f"Действие: {action}\n"
-            f"Модели: {model_list}\n"
-            f"Причина: {reason}\n"
-            "Предлагается к исполнению. Нужен ответ? /yes"
-        )
+        info_lines = [
+            f"🤖 Ответ от LLM роутера ({router_model}).",
+            f"Действие: {action}",
+            *_router_target_lines(routed, chat_id, user_id),
+            f"Рекомендации роутера: {model_list}",
+            f"Причина: {reason}",
+            "Выполнить это действие? /yes",
+        ]
+        info = "\n".join(info_lines)
 
         user_message_saved = False
         try:
