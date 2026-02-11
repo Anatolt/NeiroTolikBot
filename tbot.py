@@ -83,6 +83,7 @@ BOT_CONFIG["IMAGE_ROUTER_KEY"] = os.getenv("IMAGE_ROUTER_KEY")
 BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+BOT_CONFIG["MINI_APP_URL"] = os.getenv("MINI_APP_URL")
 voice_prompt_env = os.getenv("VOICE_TRANSCRIBE_PROMPT")
 if voice_prompt_env is not None:
     BOT_CONFIG["VOICE_TRANSCRIBE_PROMPT"] = voice_prompt_env
@@ -209,6 +210,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("voice_send_segmented", voice_send_segmented_command))
     application.add_handler(CommandHandler("say", say_command))
     application.add_handler(CommandHandler("set_tts_voice", set_tts_voice_command))
+    application.add_handler(CommandHandler("set_tts_provider", set_tts_provider_command))
     application.add_handler(CommandHandler("yes", voice_confirmation_command))
     application.add_handler(CommandHandler("y", voice_confirmation_command))
     application.add_handler(CommandHandler("setflow", setflow_command))

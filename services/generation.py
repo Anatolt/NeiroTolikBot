@@ -1120,9 +1120,10 @@ async def generate_image(
     platform: str | None = None,
     chat_id: str | None = None,
     user_id: str | None = None,
+    model_override: str | None = None,
 ) -> str | None:
     """Генерация изображения через PiAPI.ai или ImageRouter."""
-    model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+    model = model_override or BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
     if not model:
         logger.error("Image generation model is not configured.")
         return None

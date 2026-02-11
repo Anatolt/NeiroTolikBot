@@ -148,7 +148,7 @@ async def handle_voice_confirmation(update: Update, context: ContextTypes.DEFAUL
         if not file_path or not os.path.exists(file_path):
             return True
         await message.reply_text("Ок, распознаю голосовое...")
-        transcript, error = await transcribe_audio(file_path)
+        transcript, error = await transcribe_audio(file_path, user_id=str(message.from_user.id))
         if transcript:
             log_stt_usage(
                 platform="telegram",
@@ -356,7 +356,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             tmp_path = None
             return
 
-        transcript, error = await transcribe_audio(tmp_path)
+        transcript, error = await transcribe_audio(tmp_path, user_id=str(message.from_user.id))
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:

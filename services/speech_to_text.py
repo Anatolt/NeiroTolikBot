@@ -9,7 +9,7 @@ import aiohttp
 from openai import AsyncOpenAI
 
 from config import BOT_CONFIG
-from services.memory import get_voice_model
+from services.memory import get_miniapp_voice_model, get_voice_model
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def _get_client() -> Optional[AsyncOpenAI]:
     return _client
 
 
-async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]]:
+async def transcribe_audio(file_path: str, user_id: str | None = None) -> Tuple[Optional[str], Optional[str]]:
     try:
         size_bytes = os.path.getsize(file_path)
     except OSError:
@@ -100,7 +100,8 @@ async def transcribe_audio(file_path: str) -> Tuple[Optional[str], Optional[str]
         if size_bytes > hard_max_bytes:
             return None, f"Audio file exceeds {hard_max_mb}MB limit"
 
-    model_name = get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
+    miniapp_model = get_miniapp_voice_model(str(user_id)) if user_id else None
+    model_name = miniapp_model or get_voice_model() or BOT_CONFIG.get("VOICE_MODEL") or "whisper-1"
     if model_name == "local-whisper":
         return await _transcribe_local_whisper(file_path)
 

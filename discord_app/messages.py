@@ -70,7 +70,7 @@ async def _handle_voice_confirmation(message: discord.Message) -> bool:
         if not file_path or not os.path.exists(file_path):
             return True
         await message.channel.send("Ок, распознаю голосовое...")
-        transcript, error = await transcribe_audio(file_path)
+        transcript, error = await transcribe_audio(file_path, user_id=str(message.author.id))
         try:
             os.unlink(file_path)
         except OSError:
@@ -287,7 +287,7 @@ def register_message_handlers(bot: commands.Bot) -> None:
                         tmp_path = None
                         return
 
-                    transcript, error = await transcribe_audio(tmp_path)
+                    transcript, error = await transcribe_audio(tmp_path, user_id=str(message.author.id))
                 finally:
                     if tmp_path and os.path.exists(tmp_path):
                         try:

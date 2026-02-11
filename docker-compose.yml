@@ -9,6 +9,8 @@ services:
     cpus: "2.0"
     volumes:
       - ./data:/app/data
+    ports:
+      - "127.0.0.1:8090:8080"
 
     command: ["bash", "/app/start-bot.sh"]
 

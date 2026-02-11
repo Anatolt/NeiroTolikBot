@@ -16,6 +16,8 @@ from services.generation import CATEGORY_TITLES, build_models_messages, generate
 from services.memory import (
     add_message,
     get_history,
+    get_miniapp_image_model,
+    get_miniapp_text_model,
     get_preferred_model,
     get_routing_mode,
     get_show_response_header,
@@ -290,6 +292,8 @@ async def execute_routed_request(
     chat_id = request.chat_id
     user_id = request.user_id
     preferred_model = get_preferred_model(chat_id, user_id)
+    miniapp_text_model = get_miniapp_text_model(user_id)
+    miniapp_image_model = get_miniapp_image_model(user_id)
     show_response_header = get_show_response_header(chat_id, user_id)
 
     request_type = routed.request_type
@@ -339,11 +343,11 @@ async def execute_routed_request(
             )
     elif request_type == "image":
         responses.append(MessageResponse(text="Генерирую изображение..."))
-        image_model = BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
+        image_model = miniapp_image_model or BOT_CONFIG.get("IMAGE_GENERATION", {}).get("MODEL")
         if routed.user_routing_mode == "llm":
             translation_model = BOT_CONFIG.get("ROUTER_MODEL") or BOT_CONFIG.get("DEFAULT_MODEL")
         else:
-            translation_model = preferred_model or BOT_CONFIG.get("DEFAULT_MODEL")
+            translation_model = preferred_model or miniapp_text_model or BOT_CONFIG.get("DEFAULT_MODEL")
 
         translated_prompt = await translate_prompt(
             content,
@@ -372,6 +376,7 @@ async def execute_routed_request(
             platform=request.platform,
             chat_id=chat_id,
             user_id=user_id,
+            model_override=image_model,
         )
         if image_url:
             responses.append(MessageResponse(photo_url=image_url))
@@ -380,7 +385,7 @@ async def execute_routed_request(
     elif request_type == "search":
         chat_id = str(chat_id)
         user_id = str(user_id)
-        model_name = model or preferred_model or BOT_CONFIG["DEFAULT_MODEL"]
+        model_name = model or preferred_model or miniapp_text_model or BOT_CONFIG["DEFAULT_MODEL"]
 
         responses.append(MessageResponse(text="Ищу информацию в интернете..."))
         search_results = await search_web(content)
@@ -413,7 +418,7 @@ async def execute_routed_request(
     elif request_type == "search_previous":
         chat_id = str(chat_id)
         user_id = str(user_id)
-        model_name = model or preferred_model or BOT_CONFIG["DEFAULT_MODEL"]
+        model_name = model or preferred_model or miniapp_text_model or BOT_CONFIG["DEFAULT_MODEL"]
 
         history = get_history(chat_id, user_id, limit=10)
 
@@ -593,7 +598,7 @@ async def execute_routed_request(
     elif request_type == "text":
         chat_id = str(chat_id)
         user_id = str(user_id)
-        model_name = model or preferred_model or BOT_CONFIG["DEFAULT_MODEL"]
+        model_name = model or preferred_model or miniapp_text_model or BOT_CONFIG["DEFAULT_MODEL"]
         add_message(chat_id, user_id, "user", model_name, content)
 
         response_text, used_model, context_info = await generate_text(

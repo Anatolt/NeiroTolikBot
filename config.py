@@ -11,6 +11,7 @@ BOT_CONFIG = {
     # Bot Settings
     "BOT_TITLE": "NeiroTolikBot",
     "BOT_REFERER": "https://t.me/NeiroTolikBot",
+    "MINI_APP_URL": None,
     
     # API Settings
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",

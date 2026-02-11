@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
 from config import BOT_CONFIG
@@ -11,6 +11,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_mention = user.mention_markdown_v2()
     default_model_escaped = escape_markdown_v2(BOT_CONFIG["DEFAULT_MODEL"])
+    mini_app_url = (BOT_CONFIG.get("MINI_APP_URL") or "").strip()
 
     text = (
         f"Привет, {user_mention}\\! Я бот\\-помощник\\.\n\n"
@@ -23,7 +24,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"❓ Используй /help для получения справки\\."
     )
 
-    await update.message.reply_markdown_v2(text=text)
+    reply_markup = None
+    if mini_app_url:
+        text += "\n\n🚀 Открыть Mini App можно кнопкой ниже\\."
+        reply_markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🚀 Открыть Mini App", web_app=WebAppInfo(url=mini_app_url))]]
+        )
+
+    await update.message.reply_markdown_v2(text=text, reply_markup=reply_markup)
 
 
 async def new_dialog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

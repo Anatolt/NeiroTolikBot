@@ -1491,7 +1491,7 @@ async def process_voice_log_sink(
                 transcribed_bytes = 0
                 for part_idx, segment_path in enumerate(segment_paths, start=1):
                     segment_size = os.path.getsize(segment_path)
-                    transcript, error = await transcribe_audio(segment_path)
+                    transcript, error = await transcribe_audio(segment_path, user_id=str(user_id))
                     if not transcript:
                         if error:
                             logger.warning("Discord channel STT error: %s", error)

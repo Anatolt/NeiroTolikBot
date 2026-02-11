@@ -122,6 +122,16 @@ def init_db():
     ''')
 
     cursor.execute('''
+    CREATE TABLE IF NOT EXISTS miniapp_user_settings (
+        user_id TEXT PRIMARY KEY,
+        text_model TEXT,
+        voice_model TEXT,
+        image_model TEXT,
+        updated_at DATETIME NOT NULL
+    )
+    ''')
+
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS user_profiles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         platform TEXT NOT NULL,
@@ -1490,6 +1500,76 @@ def get_voice_auto_reply(chat_id: str, user_id: str) -> bool:
 
     value = result[0]
     return bool(value) if value is not None else False
+
+def set_miniapp_settings(
+    user_id: str,
+    text_model: Optional[str] = None,
+    voice_model: Optional[str] = None,
+    image_model: Optional[str] = None,
+) -> None:
+    """Сохраняет персональные настройки моделей из Mini App."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO miniapp_user_settings (user_id, text_model, voice_model, image_model, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            text_model=excluded.text_model,
+            voice_model=excluded.voice_model,
+            image_model=excluded.image_model,
+            updated_at=excluded.updated_at
+        """,
+        (user_id, text_model, voice_model, image_model, datetime.now().isoformat()),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_miniapp_settings(user_id: str) -> Dict[str, Optional[str]]:
+    """Возвращает персональные настройки моделей пользователя из Mini App."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT text_model, voice_model, image_model
+        FROM miniapp_user_settings
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return {'text_model': None, 'voice_model': None, 'image_model': None}
+
+    return {
+        'text_model': row['text_model'],
+        'voice_model': row['voice_model'],
+        'image_model': row['image_model'],
+    }
+
+
+def get_miniapp_text_model(user_id: str) -> Optional[str]:
+    """Возвращает выбранную в Mini App модель текста."""
+    return get_miniapp_settings(user_id).get('text_model')
+
+
+def get_miniapp_voice_model(user_id: str) -> Optional[str]:
+    """Возвращает выбранную в Mini App модель STT."""
+    return get_miniapp_settings(user_id).get('voice_model')
+
+
+def get_miniapp_image_model(user_id: str) -> Optional[str]:
+    """Возвращает выбранную в Mini App модель генерации изображений."""
+    return get_miniapp_settings(user_id).get('image_model')
+
 
 # Инициализация базы данных при импорте модуля
 init_db()
