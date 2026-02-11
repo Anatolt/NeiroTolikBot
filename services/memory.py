@@ -1459,6 +1459,30 @@ def set_preferred_model(chat_id: str, user_id: str, preferred_model: Optional[st
     conn.close()
 
 
+def set_preferred_model_for_user(user_id: str, preferred_model: Optional[str]) -> int:
+    """Синхронизирует preferred_model во всех чатах пользователя."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE user_settings
+        SET preferred_model = ?, updated_at = ?
+        WHERE user_id = ?
+        """,
+        (preferred_model, datetime.now().isoformat(), user_id),
+    )
+
+    updated_rows = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    if updated_rows:
+        logger.info("Synced preferred model for user %s across %s chat(s)", user_id, updated_rows)
+
+    return updated_rows
+
+
 def get_preferred_model(chat_id: str, user_id: str) -> Optional[str]:
     """Возвращает сохранённую модель пользователя, если она есть."""
     conn = sqlite3.connect(DB_PATH)

@@ -15,7 +15,7 @@ from flask import Flask, jsonify, request
 
 from config import BOT_CONFIG
 from services.generation import categorize_models, fetch_imagerouter_models, fetch_models_data
-from services.memory import get_miniapp_settings, init_db, set_miniapp_settings
+from services.memory import get_miniapp_settings, init_db, set_miniapp_settings, set_preferred_model_for_user
 
 load_dotenv()
 
@@ -642,6 +642,8 @@ def miniapp_update_settings():
         voice_model=voice_model,
         image_model=image_model,
     )
+    if text_model:
+        set_preferred_model_for_user(str(user_id), text_model)
 
     return jsonify({"ok": True})
 
