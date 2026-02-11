@@ -55,6 +55,7 @@ from handlers.commands import (
     voice_send_segmented_command,
     say_command,
     set_tts_voice_command,
+    set_tts_provider_command,
 )
 from handlers.chat_tracking import track_chat
 from handlers.messages import handle_message

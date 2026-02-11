@@ -12,6 +12,8 @@ from config import BOT_CONFIG
 from handlers.commands_utils import is_admin_user
 from services.memory import (
     get_tts_voice,
+    get_tts_provider,
+    set_tts_provider,
     set_tts_voice,
     set_voice_log_debug,
     set_voice_log_model,
@@ -214,6 +216,7 @@ async def set_tts_voice_command(update: Update, context: ContextTypes.DEFAULT_TY
         for idx, voice in enumerate(voices, start=1):
             lines.append(f"{idx}) {voice}")
         await update.message.reply_text("\n".join(lines))
+
         return
 
     index = int(args[0])
@@ -225,6 +228,29 @@ async def set_tts_voice_command(update: Update, context: ContextTypes.DEFAULT_TY
     set_tts_voice(selected)
     await update.message.reply_text(f"✅ Голос TTS установлен: {selected}")
 
+
+async def set_tts_provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Переключает TTS провайдера (local/openai)."""
+    if not is_admin_user(update, context):
+        await update.message.reply_text("Доступ к админ-командам запрещён.")
+        return
+
+    args = context.args or []
+    if not args:
+        current = get_tts_provider() or "local"
+        await update.message.reply_text(
+            "Использование: /set_tts_provider <local|openai>\n"
+            f"Текущий: {current}"
+        )
+        return
+
+    choice = args[0].strip().lower()
+    if choice not in {"local", "openai"}:
+        await update.message.reply_text("Нужно указать local или openai.")
+        return
+
+    set_tts_provider(choice)
+    await update.message.reply_text(f"✅ TTS провайдер установлен: {choice}")
 
 async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Озвучивает текст голосом (TTS) и отправляет голосовое сообщение."""

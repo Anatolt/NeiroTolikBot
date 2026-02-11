@@ -150,8 +150,19 @@ async def _transcribe_local_whisper(file_path: str) -> Tuple[Optional[str], Opti
                         text = payload.get("text") or payload.get("transcript") or payload.get("result")
                         if text:
                             return text.strip(), None
+                        return None, "Local whisper returned empty response"
                     raw_text = raw_text.strip()
                     if raw_text:
+                        try:
+                            import json
+                            parsed = json.loads(raw_text)
+                        except Exception:
+                            parsed = None
+                        if isinstance(parsed, dict):
+                            text = parsed.get("text") or parsed.get("transcript") or parsed.get("result")
+                            if text:
+                                return text.strip(), None
+                            return None, "Local whisper returned empty response"
                         return raw_text, None
                     return None, "Local whisper returned empty response"
     except Exception as exc:

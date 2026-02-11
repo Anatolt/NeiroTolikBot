@@ -49,6 +49,7 @@ from handlers.commands_selftest import selftest_command
 from handlers.commands_voice import (
     say_command,
     set_tts_voice_command,
+    set_tts_provider_command,
     set_voice_log_model_command,
     set_voice_model_command,
     tts_voices_command,
@@ -100,6 +101,7 @@ __all__ = [
     "set_pic_model_number_command",
     "set_text_model_command",
     "set_tts_voice_command",
+    "set_tts_provider_command",
     "set_voice_log_model_command",
     "set_voice_model_command",
     "setflow_command",

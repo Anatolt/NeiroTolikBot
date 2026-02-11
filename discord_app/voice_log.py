@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import audioop
 import logging
 import os
@@ -7,6 +8,7 @@ import subprocess
 import re
 import tempfile
 import time
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 import wave
@@ -40,8 +42,116 @@ from services.tts import synthesize_speech
 
 logger = logging.getLogger(__name__)
 
+BASE_DIR = Path(__file__).resolve().parents[1]
+RECENT_CHUNKS_DIR = BASE_DIR / "data" / "voice_chunks"
+
 _voice_log_tasks: dict[int, asyncio.Task] = {}
+_voice_log_processing_semaphore = asyncio.Semaphore(1)
 _wake_last_trigger: dict[str, float] = {}
+
+
+class RollingWaveSink(discord.sinks.Sink):
+    def __init__(self, interval_seconds: float, *, filters=None):
+        super().__init__(filters=filters)
+        self.interval_seconds = float(interval_seconds)
+        self._states: dict[object, dict[str, object]] = {}
+        self._chunks: deque[dict[str, object]] = deque()
+        self._lock = threading.Lock()
+        self._bytes_per_second: int | None = None
+        self._target_bytes: int | None = None
+
+    def init(self, vc):
+        self.vc = vc
+        super().init(vc)
+        self._bytes_per_second = int(vc.decoder.SAMPLING_RATE * vc.decoder.SAMPLE_SIZE)
+        self._target_bytes = int(self.interval_seconds * self._bytes_per_second)
+
+    def _open_state(self, user) -> dict[str, object]:
+        safe_prefix = _sanitize_tmp_prefix(str(user))
+        tmp_file = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".wav", prefix=f"{safe_prefix}+chunk_"
+        )
+        wav_handle = wave.open(tmp_file, "wb")
+        wav_handle.setnchannels(self.vc.decoder.CHANNELS)
+        wav_handle.setsampwidth(self.vc.decoder.SAMPLE_SIZE // self.vc.decoder.CHANNELS)
+        wav_handle.setframerate(self.vc.decoder.SAMPLING_RATE)
+        state = {
+            "user": user,
+            "file": tmp_file,
+            "wave": wav_handle,
+            "path": tmp_file.name,
+            "bytes": 0,
+        }
+        self._states[user] = state
+        return state
+
+    def _finalize_state(self, user) -> dict[str, object] | None:
+        state = self._states.pop(user, None)
+        if not state:
+            return None
+        wav_handle = state.get("wave")
+        file_handle = state.get("file")
+        if wav_handle:
+            wav_handle.close()
+        if file_handle:
+            file_handle.close()
+        bytes_written = int(state.get("bytes") or 0)
+        if bytes_written <= 0 or not self._bytes_per_second:
+            return None
+        duration = bytes_written / self._bytes_per_second
+        entry = {
+            "user_key": user,
+            "tmp_path": state.get("path"),
+            "duration": duration,
+            "expected_seconds": float(self.interval_seconds),
+        }
+        return entry
+
+    def pop_chunks(self, finalize: bool = False) -> list[dict[str, object]]:
+        if finalize:
+            for user in list(self._states.keys()):
+                entry = self._finalize_state(user)
+                if entry:
+                    self._chunks.append(entry)
+        with self._lock:
+            items = list(self._chunks)
+            self._chunks.clear()
+        return items
+
+    @discord.sinks.Filters.container
+    def write(self, data, user):
+        if not self.vc or not self._target_bytes or not self._bytes_per_second:
+            return
+        offset = 0
+        data_len = len(data)
+        while offset < data_len:
+            state = self._states.get(user)
+            if not state:
+                state = self._open_state(user)
+            remaining = self._target_bytes - int(state.get("bytes") or 0)
+            if remaining <= 0:
+                entry = self._finalize_state(user)
+                if entry:
+                    with self._lock:
+                        self._chunks.append(entry)
+                continue
+            chunk = data[offset : offset + remaining]
+            state["wave"].writeframesraw(chunk)
+            state["bytes"] = int(state.get("bytes") or 0) + len(chunk)
+            offset += len(chunk)
+            if int(state.get("bytes") or 0) >= self._target_bytes:
+                entry = self._finalize_state(user)
+                if entry:
+                    with self._lock:
+                        self._chunks.append(entry)
+
+    def cleanup(self):
+        self.finished = True
+        for user in list(self._states.keys()):
+            entry = self._finalize_state(user)
+            if entry:
+                with self._lock:
+                    self._chunks.append(entry)
 
 
 async def _send_admin_voice_log(
@@ -335,6 +445,28 @@ def _sanitize_tmp_prefix(raw: str | None) -> str:
     return cleaned[:32]
 
 
+
+
+def _store_recent_chunk(src_path: str, prefix: str | None = None) -> None:
+    try:
+        RECENT_CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_prefix = _sanitize_tmp_prefix(prefix) if prefix else "chunk"
+        suffix = Path(src_path).suffix or ".mp3"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        dst_name = f"{safe_prefix}_{timestamp}{suffix}"
+        dst_path = RECENT_CHUNKS_DIR / dst_name
+        shutil.copy2(src_path, dst_path)
+
+        files = sorted(RECENT_CHUNKS_DIR.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for extra in files[3:]:
+            try:
+                extra.unlink()
+            except OSError:
+                logger.warning("Failed to remove old chunk %s", extra)
+    except Exception as exc:
+        logger.warning("Failed to store recent chunk %s: %s", src_path, exc)
+
+
 def _stage_voice_log_audio(src_path: str, prefix: str | None = None) -> str | None:
     try:
         suffix = Path(src_path).suffix or ".wav"
@@ -344,6 +476,7 @@ def _stage_voice_log_audio(src_path: str, prefix: str | None = None) -> str | No
         ) as tmp_file:
             staged_path = tmp_file.name
         shutil.copy2(src_path, staged_path)
+        _store_recent_chunk(staged_path, prefix=prefix)
         return staged_path
     except Exception as exc:
         logger.warning("Failed to stage voice log audio %s: %s", src_path, exc)
@@ -600,11 +733,30 @@ def _detect_speech_segments(
             sorted_vals = sorted(rms_values)
             noise_floor = sorted_vals[int(len(sorted_vals) * 0.6)]
             threshold = max(50, int(noise_floor * 1.2))
+            total_windows = len(rms_values)
+            silence_windows = sum(1 for v in rms_values if v < threshold)
+            zero_windows = sum(1 for v in rms_values if v == 0)
+            max_silence_run = 0
+            current_silence = 0
+            for value in rms_values:
+                if value < threshold:
+                    current_silence += 1
+                    if current_silence > max_silence_run:
+                        max_silence_run = current_silence
+                else:
+                    current_silence = 0
             stats.update(
                 {
                     "noise_floor": noise_floor,
                     "threshold": threshold,
                     "rms_max": max(rms_values),
+                    "rms_min": min(rms_values),
+                    "rms_avg": sum(rms_values) / total_windows if total_windows else 0,
+                    "window_ms": frame_ms,
+                    "windows": total_windows,
+                    "silence_windows": silence_windows,
+                    "zero_windows": zero_windows,
+                    "max_silence_windows": max_silence_run,
                 }
             )
 
@@ -958,6 +1110,7 @@ def _sanitize_summary_text(text: str) -> str:
 def _collect_interval_entries(
     sink: discord.sinks.Sink,
     tail_seconds: float,
+    expected_seconds: float,
 ) -> tuple[list[dict[str, object]], bool]:
     entries: list[dict[str, object]] = []
     extend = False
@@ -988,11 +1141,17 @@ def _collect_interval_entries(
             if segments and duration > 0 and (duration - last_end) <= tail_seconds:
                 extend = True
 
+            expected = float(expected_seconds or 0)
+            gap = expected - duration
+            gap_pct = (gap / expected * 100.0) if expected > 0 else 0.0
             entries.append(
                 {
                     "user_key": user_key,
                     "tmp_path": tmp_path,
                     "duration": duration,
+                    "expected_seconds": expected,
+                    "gap_seconds": gap,
+                    "gap_pct": gap_pct,
                 }
             )
         except Exception as exc:
@@ -1015,6 +1174,7 @@ async def _process_voice_log_entries(
 
     grouped: dict[object, list[str]] = {}
     user_keys: dict[object, object] = {}
+    capture_stats: dict[object, dict[str, float]] = {}
     for entry in entries:
         user_key = entry["user_key"]
         tmp_path = entry["tmp_path"]
@@ -1024,7 +1184,11 @@ async def _process_voice_log_entries(
         if user_id not in grouped:
             grouped[user_id] = []
             user_keys[user_id] = user_key
+            capture_stats[user_id] = {"expected": 0.0, "duration": 0.0}
         grouped[user_id].append(tmp_path)
+        stats = capture_stats[user_id]
+        stats["expected"] += float(entry.get("expected_seconds") or 0)
+        stats["duration"] += float(entry.get("duration") or 0)
 
     merged_paths: list[str] = []
     audio_data: dict[object, object] = {}
@@ -1051,7 +1215,7 @@ async def _process_voice_log_entries(
         if not audio_data:
             return
 
-        sink = type("MergedSink", (), {"audio_data": audio_data})()
+        sink = type("MergedSink", (), {"audio_data": audio_data, "capture_stats": capture_stats})()
         await process_voice_log_sink(sink, voice_client)
     finally:
         for handle in open_handles:
@@ -1083,6 +1247,7 @@ async def process_voice_log_sink(
     timeline_entries: list[dict[str, object]] = []
     debug_enabled = get_voice_log_debug()
     debug_lines: list[str] = []
+    capture_stats = getattr(sink, "capture_stats", None) or {}
     stt_errors: list[str] = []
     pending_audio_files: list[dict[str, str]] = []
 
@@ -1174,6 +1339,16 @@ async def process_voice_log_sink(
         member = entry["member"]
         tmp_path = entry["tmp_path"]
         debug_prefix = f"user={username or user_id or user_key}"
+        if debug_enabled and user_id in capture_stats:
+            stats = capture_stats[user_id]
+            expected = float(stats.get("expected") or 0)
+            actual = float(stats.get("duration") or 0)
+            gap = expected - actual
+            gap_pct = (gap / expected * 100.0) if expected > 0 else 0.0
+            _debug(
+                f"{debug_prefix} capture expected={expected:.2f}s actual={actual:.2f}s "
+                f"gap={gap:.2f}s gap_pct={gap_pct:.1f}"
+            )
 
         voice_model = (
             get_voice_log_model()
@@ -1188,6 +1363,33 @@ async def process_voice_log_sink(
             send_mode = stored_mode
 
         segments, seg_stats = _detect_speech_segments(tmp_path)
+        if debug_enabled and seg_stats:
+            rate = float(seg_stats.get("rate", 0) or 0)
+            frames = float(seg_stats.get("frames", 0) or 0)
+            duration = frames / rate if rate > 0 and frames > 0 else 0.0
+            window_ms = int(seg_stats.get("window_ms", 0) or 0)
+            windows = int(seg_stats.get("windows", 0) or 0)
+            silence_windows = int(seg_stats.get("silence_windows", 0) or 0)
+            zero_windows = int(seg_stats.get("zero_windows", 0) or 0)
+            max_silence_windows = int(seg_stats.get("max_silence_windows", 0) or 0)
+            silence_pct = (silence_windows / windows * 100.0) if windows else 0.0
+            zero_pct = (zero_windows / windows * 100.0) if windows else 0.0
+            max_silence_ms = max_silence_windows * window_ms
+            rms_min = seg_stats.get("rms_min")
+            rms_avg = seg_stats.get("rms_avg")
+            rms_max = seg_stats.get("rms_max")
+            noise = seg_stats.get("noise_floor")
+            threshold = seg_stats.get("threshold")
+            rms_avg_text = f"{rms_avg:.1f}" if isinstance(rms_avg, (int, float)) else str(rms_avg)
+            _debug(
+                f"{debug_prefix} wav_stats rate={rate:.0f} frames={frames:.0f} dur={duration:.2f}s "
+                f"win_ms={window_ms} windows={windows} silence_pct={silence_pct:.1f} "
+                f"zero_pct={zero_pct:.1f} max_silence_ms={max_silence_ms}"
+            )
+            _debug(
+                f"{debug_prefix} rms min={rms_min} avg={rms_avg_text} max={rms_max} "
+                f"noise={noise} thr={threshold}"
+            )
         if send_mode == "raw":
             rate = float(seg_stats.get("rate", 0) or 0)
             frames = float(seg_stats.get("frames", 0) or 0)
@@ -1309,9 +1511,6 @@ async def process_voice_log_sink(
                     continue
 
                 transcript = " ".join(transcript_parts)
-                if len(transcript.strip()) < 3 and (end_sec - start_sec) < 0.6:
-                    continue
-                username = username or (member.display_name if member else str(user_id))
                 if segment_paths:
                     total_parts = len(segment_paths)
                     name_prefix = username or (str(user_id) if user_id else str(user_key))
@@ -1330,6 +1529,9 @@ async def process_voice_log_sink(
                                 "caption": f"{username}{part_suffix} {start_sec:.1f}-{end_sec:.1f}s",
                             }
                         )
+                if len(transcript.strip()) < 3 and (end_sec - start_sec) < 0.6:
+                    continue
+                username = username or (member.display_name if member else str(user_id))
                 timeline_entries.append(
                     {
                         "start": start_sec,
@@ -1441,21 +1643,29 @@ async def process_voice_log_sink(
                     logger.warning("Failed to remove temp file %s", path)
 
 
+async def _process_voice_log_entries_async(
+    entries: list[dict[str, object]],
+    voice_client: discord.VoiceClient,
+) -> None:
+    async with _voice_log_processing_semaphore:
+        await _process_voice_log_entries(entries, voice_client)
+
+
 async def _voice_log_callback(
     sink: discord.sinks.Sink,
     voice_client: discord.VoiceClient,
     done_event: asyncio.Event,
 ) -> None:
-    await process_voice_log_sink(sink, voice_client)
     done_event.set()
+    asyncio.create_task(process_voice_log_sink(sink, voice_client))
 
 
 async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
     interval = int(BOT_CONFIG.get("VOICE_LOG_INTERVAL_SECONDS", 10))
-    max_total = int(BOT_CONFIG.get("VOICE_LOG_MAX_SEGMENT_SECONDS", 60))
-    tail_seconds = float(BOT_CONFIG.get("VOICE_LOG_PAUSE_TAIL_SECONDS", 0.6))
     auto_leave_seconds = int(BOT_CONFIG.get("VOICE_AUTO_LEAVE_SECONDS", 60))
     empty_since: datetime | None = None
+    sink: RollingWaveSink | None = None
+
     while voice_client and voice_client.is_connected():
         channel = getattr(voice_client, "channel", None)
         humans = count_humans_in_voice(channel) if channel else 0
@@ -1471,6 +1681,17 @@ async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
             if empty_since is None:
                 empty_since = datetime.now()
             elif (datetime.now() - empty_since).total_seconds() >= auto_leave_seconds:
+                try:
+                    if voice_client.recording:
+                        await asyncio.to_thread(voice_client.stop_recording)
+                except Exception as exc:
+                    logger.warning("Failed to stop recording: %s", exc)
+                if sink:
+                    pending = sink.pop_chunks(finalize=True)
+                    if pending:
+                        asyncio.create_task(
+                            _process_voice_log_entries_async(pending, voice_client)
+                        )
                 try:
                     guild = getattr(voice_client, "guild", None)
                     if guild:
@@ -1490,15 +1711,8 @@ async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
             getattr(channel, "id", "unknown"),
             recording,
         )
-        if recording:
-            await asyncio.sleep(1)
-            continue
-        collected_entries: list[dict[str, object]] = []
-        total_seconds = 0.0
-        extend = True
-
-        while extend and total_seconds < max_total:
-            sink = discord.sinks.WaveSink()
+        if not recording:
+            sink = RollingWaveSink(interval_seconds=interval)
             done_event = asyncio.Event()
             try:
                 logger.info(
@@ -1509,33 +1723,18 @@ async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
                 voice_client.start_recording(
                     sink, _voice_log_capture_callback, voice_client, done_event
                 )
-                await asyncio.sleep(interval)
             except Exception as exc:
                 logger.warning("Voice log recording failed: %s", exc)
-                await asyncio.sleep(interval)
-                extend = False
-            finally:
-                try:
-                    logger.info(
-                        "Voice log stop recording guild=%s channel=%s recording=%s",
-                        getattr(getattr(voice_client, "guild", None), "id", "unknown"),
-                        getattr(getattr(voice_client, "channel", None), "id", "unknown"),
-                        getattr(voice_client, "recording", False),
-                    )
-                    await asyncio.to_thread(voice_client.stop_recording)
-                except Exception:
-                    pass
-                try:
-                    await asyncio.wait_for(done_event.wait(), timeout=30)
-                except asyncio.TimeoutError:
-                    logger.warning("Voice log capture timed out")
-                    extend = False
+                await asyncio.sleep(1)
+                continue
 
-            entries, extend = _collect_interval_entries(sink, tail_seconds)
-            collected_entries.extend(entries)
-            total_seconds += interval
-
-        await _process_voice_log_entries(collected_entries, voice_client)
+        if sink:
+            pending = sink.pop_chunks()
+            if pending:
+                asyncio.create_task(
+                    _process_voice_log_entries_async(pending, voice_client)
+                )
+        await asyncio.sleep(1)
 
 
 def ensure_voice_log_task(voice_client: discord.VoiceClient) -> None:
