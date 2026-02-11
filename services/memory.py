@@ -445,6 +445,54 @@ def add_message(
     conn.commit()
     conn.close()
 
+
+def add_message_unique(
+    chat_id: str,
+    user_id: str,
+    role: str,
+    model: str,
+    text: str,
+    session_id: Optional[str] = None,
+    dedup_seconds: int = 8,
+) -> bool:
+    """Добавляет сообщение, пропуская дубликаты за короткое окно времени."""
+    normalized_text = (text or "").strip()
+    if not normalized_text:
+        return False
+
+    now = datetime.now()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT timestamp
+        FROM messages
+        WHERE chat_id = ? AND user_id = ? AND role = ? AND text = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (chat_id, user_id, role, normalized_text),
+    )
+    row = cursor.fetchone()
+
+    if row and row[0]:
+        try:
+            previous_ts = datetime.fromisoformat(row[0])
+            if (now - previous_ts).total_seconds() <= max(dedup_seconds, 0):
+                conn.close()
+                return False
+        except Exception:
+            pass
+
+    cursor.execute(
+        "INSERT INTO messages (chat_id, user_id, role, model, text, timestamp, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (chat_id, user_id, role, model, normalized_text, now.isoformat(), session_id),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
 def remove_messages_by_ids(message_ids: List[int]) -> None:
     """Удаляет сообщения с указанными идентификаторами."""
     if not message_ids:

@@ -10,6 +10,7 @@ from handlers.voice_messages import handle_voice_confirmation, PENDING_CONSILIUM
 from services.consilium import parse_consilium_request, select_default_consilium_models
 from services.memory import (
     add_admin,
+    add_message,
     get_latest_pending_discord_join_request,
     get_pending_discord_join_requests,
     is_admin,
@@ -201,6 +202,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Предлагается к исполнению. Нужен ответ? /yes"
         )
 
+        user_message_saved = False
+        try:
+            add_message(chat_id, user_id, "user", routed.model or "router_pending", effective_text)
+            user_message_saved = True
+        except Exception as exc:
+            logger.warning("Failed to persist pending routed user message: %s", exc)
+
         pending = context.user_data.get("pending_llm_routes", {})
         key = f"{chat_id}:{user_id}"
         pending[key] = {
@@ -221,6 +229,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "reason": routed.reason,
                 "user_routing_mode": routed.user_routing_mode,
             },
+            "user_message_saved": user_message_saved,
         }
         context.user_data["pending_llm_routes"] = pending
 

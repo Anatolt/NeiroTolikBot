@@ -286,6 +286,7 @@ async def execute_routed_request(
     request: MessageProcessingRequest,
     routed: RoutedRequest,
     ack_callback: Optional[Callable[[], Awaitable[None]]] = None,
+    skip_user_message_persist: bool = False,
 ) -> List[MessageResponse]:
     responses: List[MessageResponse] = []
 
@@ -395,7 +396,8 @@ async def execute_routed_request(
             "Пожалуйста, проанализируй найденную информацию и дай развернутый ответ на запрос пользователя."
         )
 
-        add_message(chat_id, user_id, "user", model_name, f"погугли {content}")
+        if not skip_user_message_persist:
+            add_message(chat_id, user_id, "user", model_name, f"погугли {content}")
 
         response_text, used_model, context_info = await generate_text(
             prompt_with_search,
@@ -481,7 +483,8 @@ async def execute_routed_request(
             "Пожалуйста, проанализируй найденную информацию и дополни мой предыдущий ответ актуальными данными из интернета."
         )
 
-        add_message(chat_id, user_id, "user", model_name, "погугли")
+        if not skip_user_message_persist:
+            add_message(chat_id, user_id, "user", model_name, "погугли")
 
         response_text, used_model, context_info = await generate_text(
             final_prompt,
@@ -543,7 +546,8 @@ async def execute_routed_request(
         responses.append(status_message)
 
         if BOT_CONFIG.get("CONSILIUM_CONFIG", {}).get("SAVE_TO_HISTORY", True):
-            add_message(chat_id, user_id, "user", models[0], prompt)
+            if not skip_user_message_persist:
+                add_message(chat_id, user_id, "user", models[0], prompt)
 
         start_time = time.time()
 
@@ -599,7 +603,8 @@ async def execute_routed_request(
         chat_id = str(chat_id)
         user_id = str(user_id)
         model_name = model or preferred_model or miniapp_text_model or BOT_CONFIG["DEFAULT_MODEL"]
-        add_message(chat_id, user_id, "user", model_name, content)
+        if not skip_user_message_persist:
+            add_message(chat_id, user_id, "user", model_name, content)
 
         response_text, used_model, context_info = await generate_text(
             content,

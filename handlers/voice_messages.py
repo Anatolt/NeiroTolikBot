@@ -235,6 +235,7 @@ async def handle_llm_router_confirmation(update: Update, context: ContextTypes.D
 
     request_data = entry.get("request", {})
     routed_data = entry.get("routed", {})
+    skip_user_message_persist = bool(entry.get("user_message_saved", False))
 
     request = MessageProcessingRequest(
         text=request_data.get("text", ""),
@@ -259,7 +260,12 @@ async def handle_llm_router_confirmation(update: Update, context: ContextTypes.D
     async def _ack() -> None:
         await message.reply_text("✅ Принял запрос, выполняю...")
 
-    responses = await execute_routed_request(request, routed, ack_callback=_ack)
+    responses = await execute_routed_request(
+        request,
+        routed,
+        ack_callback=_ack,
+        skip_user_message_persist=skip_user_message_persist,
+    )
     for response in responses:
         if response.photo_url:
             await message.reply_photo(response.photo_url)
