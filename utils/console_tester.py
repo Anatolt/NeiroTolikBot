@@ -135,12 +135,16 @@ class FakeMessage:
     text: str | None = None
     replies: list[str] = field(default_factory=list)
 
-    async def reply_markdown_v2(self, text: str) -> "FakeMessage":
+    async def reply_markdown_v2(self, text: str, *_, **__) -> "FakeMessage":
         self.replies.append(text)
         return self
 
     async def reply_text(self, text: str, *_, **__) -> "FakeMessage":
         self.replies.append(text)
+        return self
+
+    async def reply_document(self, *_, caption: str | None = None, **__) -> "FakeMessage":
+        self.replies.append(caption or "[document]")
         return self
 
     async def delete(self) -> None:  # pragma: no cover - поведение статуса консилиума
