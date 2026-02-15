@@ -6,7 +6,12 @@ from discord.ext import commands
 
 from discord_app.notifications import send_telegram_notification
 from discord_app.runtime import get_bot
-from discord_app.utils import count_humans_in_voice, pick_announcement_channel
+from discord_app.utils import (
+    count_humans_in_voice,
+    list_human_names_in_voice,
+    list_human_names_in_voice_via_states,
+    pick_announcement_channel,
+)
 from discord_app.voice_control import connect_voice_channel, sync_discord_voice_channels
 from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task
 from services.memory import (
@@ -22,6 +27,15 @@ _VOICE_DISCONNECT_DELAY_SECONDS = 15
 _VOICE_EMPTY_NOTIFY_DELAY_SECONDS = 300
 _voice_disconnect_tasks: dict[int, asyncio.Task] = {}
 _voice_empty_notify_tasks: dict[int, asyncio.Task] = {}
+
+def _format_names_ru(names: list[str]) -> str:
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} и {names[1]}"
+    return f"{', '.join(names[:-1])} и {names[-1]}"
 
 
 async def _disconnect_if_empty(guild_id: int) -> None:
@@ -101,11 +115,25 @@ def register_voice_state_handlers(bot: commands.Bot) -> None:
         if before.channel is None and after.channel is not None:
             channel = after.channel
             guild_name = channel.guild.name if channel.guild else "Discord"
+            others_names = list_human_names_in_voice(channel, exclude_member_id=member.id)
+            if not others_names:
+                others_names = await list_human_names_in_voice_via_states(
+                    channel, exclude_member_id=member.id
+                )
             others_count = count_humans_in_voice(channel, exclude_member_id=member.id)
+            # Make sure we can enumerate members when possible; fall back to count-only.
+            if not others_names and others_count > 0:
+                others_names = [f"{others_count} чел"]
+
+            if not others_names and others_count == 0:
+                others_part = "В чате пока больше никого."
+            else:
+                others_part = f"Еще в чате есть {_format_names_ru(others_names)}."
+
             notification = (
-                f"🎧 {member.display_name} подключился к голосовому каналу "
+                f"🎧 В чат вошёл {member.display_name}: голосовой канал "
                 f"«{channel.name}» ({guild_name}). "
-                f"Сейчас в чате ещё {others_count} чел."
+                f"{others_part}"
             )
             await send_telegram_notification(notification, discord_channel_id=str(channel.id))
 

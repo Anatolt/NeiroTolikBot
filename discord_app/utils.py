@@ -112,6 +112,63 @@ def count_humans_in_voice(
     return members_count
 
 
+def list_human_names_in_voice(
+    channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
+) -> list[str]:
+    members = getattr(channel, "members", None) or []
+    names: list[str] = []
+    for member in members:
+        if getattr(member, "bot", False):
+            continue
+        if exclude_member_id is not None and getattr(member, "id", None) == exclude_member_id:
+            continue
+        voice_state = getattr(member, "voice", None)
+        if not voice_state or not voice_state.channel or voice_state.channel.id != channel.id:
+            continue
+        names.append(getattr(member, "display_name", None) or getattr(member, "name", ""))
+    return [n for n in names if n]
+
+
+async def list_human_names_in_voice_via_states(
+    channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
+) -> list[str]:
+    """Best-effort member name resolution using guild voice_states.
+
+    This helps when member caching is incomplete (e.g. without privileged member intents),
+    where channel.members may be empty but voice_states still has IDs.
+    """
+    guild = getattr(channel, "guild", None)
+    if not guild:
+        return []
+
+    voice_states = getattr(guild, "voice_states", None)
+    if voice_states is None:
+        voice_states = getattr(guild, "_voice_states", None)
+    if not voice_states:
+        return []
+
+    names: list[str] = []
+    for member_id, voice_state in voice_states.items():
+        if exclude_member_id is not None and member_id == exclude_member_id:
+            continue
+        if not voice_state or not getattr(voice_state, "channel", None):
+            continue
+        if voice_state.channel.id != channel.id:
+            continue
+
+        member = guild.get_member(member_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(member_id)
+            except Exception:
+                member = None
+        if member is None or getattr(member, "bot", False):
+            continue
+        names.append(getattr(member, "display_name", None) or getattr(member, "name", ""))
+
+    return [n for n in names if n]
+
+
 def pick_announcement_channel(guild: discord.Guild) -> discord.TextChannel | None:
     channel = guild.system_channel
     if channel and channel.permissions_for(guild.me).send_messages:  # type: ignore[arg-type]
