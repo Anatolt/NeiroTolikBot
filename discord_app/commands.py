@@ -14,11 +14,13 @@ from discord_app.notifications import send_telegram_notification
 from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task, generate_voice_summary_for_range
 from services.tts import synthesize_speech
 from services.memory import (
+    get_voice_presence_notifications_enabled,
     get_last_voice_channel,
     set_discord_autojoin,
     set_discord_autojoin_announce_sent,
     set_last_voice_channel,
     set_voice_auto_reply,
+    set_voice_presence_notifications_enabled,
     set_voice_transcripts_enabled,
 )
 
@@ -235,6 +237,38 @@ def register_commands(bot: commands.Bot) -> None:
         status = "включена" if enabled else "отключена"
         await _reply_ctx(ctx, f"Отправка транскрипций {status}.", False)
 
+    async def _toggle_voice_alerts(
+        ctx: commands.Context | discord.ApplicationContext,
+        enabled: bool,
+    ) -> None:
+        if not ctx.guild:
+            await _reply_ctx(ctx, "Команда доступна только на сервере.", False)
+            return
+        set_voice_presence_notifications_enabled(str(ctx.guild.id), enabled)
+        status = "включены" if enabled else "отключены"
+        await _reply_ctx(
+            ctx,
+            f"Оповещения о входе/выходе из голосовых каналов {status} для этого сервера.",
+            False,
+        )
+
+    @bot.command(name="voice_alerts_off")
+    async def voice_alerts_off_command(ctx: commands.Context) -> None:
+        await _toggle_voice_alerts(ctx, False)
+
+    @bot.command(name="voice_alerts_on")
+    async def voice_alerts_on_command(ctx: commands.Context) -> None:
+        await _toggle_voice_alerts(ctx, True)
+
+    @bot.command(name="voice_alerts_status")
+    async def voice_alerts_status_command(ctx: commands.Context) -> None:
+        if not ctx.guild:
+            await ctx.send("Команда доступна только на сервере.")
+            return
+        enabled = get_voice_presence_notifications_enabled(str(ctx.guild.id))
+        status = "включены" if enabled else "отключены"
+        await ctx.send(f"Оповещения о voice-событиях сейчас {status}.")
+
     @bot.command(name="transcripts_off")
     async def transcripts_off_command(ctx: commands.Context) -> None:
         """Disable transcript forwarding to Discord text channel."""
@@ -253,6 +287,23 @@ def register_commands(bot: commands.Bot) -> None:
         @bot.slash_command(name="transcripts_on", description="Включить отправку транскрипций")
         async def transcripts_on_slash(ctx: discord.ApplicationContext) -> None:
             await _toggle_transcripts(ctx, True)
+
+        @bot.slash_command(name="voice_alerts_off", description="Отключить voice-оповещения в Telegram")
+        async def voice_alerts_off_slash(ctx: discord.ApplicationContext) -> None:
+            await _toggle_voice_alerts(ctx, False)
+
+        @bot.slash_command(name="voice_alerts_on", description="Включить voice-оповещения в Telegram")
+        async def voice_alerts_on_slash(ctx: discord.ApplicationContext) -> None:
+            await _toggle_voice_alerts(ctx, True)
+
+        @bot.slash_command(name="voice_alerts_status", description="Показать статус voice-оповещений")
+        async def voice_alerts_status_slash(ctx: discord.ApplicationContext) -> None:
+            if not ctx.guild:
+                await ctx.respond("Команда доступна только на сервере.")
+                return
+            enabled = get_voice_presence_notifications_enabled(str(ctx.guild.id))
+            status = "включены" if enabled else "отключены"
+            await ctx.respond(f"Оповещения о voice-событиях сейчас {status}.")
 
     async def _send_summary_now(
         ctx: commands.Context | discord.ApplicationContext,

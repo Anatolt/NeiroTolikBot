@@ -5,7 +5,13 @@ from telegram.constants import ChatType
 from telegram.ext import ContextTypes
 from config import BOT_CONFIG
 from handlers.message_service import MessageProcessingRequest, process_message_request
-from handlers.commands import show_discord_chats_command, show_tg_chats_command
+from handlers.commands import (
+    show_discord_chats_command,
+    show_tg_chats_command,
+    voice_alerts_off_command,
+    voice_alerts_on_command,
+    voice_alerts_status_command,
+)
 from handlers.voice_messages import handle_voice_confirmation, PENDING_CONSILIUM_KEY
 from services.consilium import parse_consilium_request, select_default_consilium_models
 from services.memory import (
@@ -161,6 +167,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         logger.info(f"Group chat message, extracted text: '{effective_text}'")
+
+    stripped_effective = effective_text.strip()
+    if stripped_effective.startswith("/"):
+        parts = stripped_effective.split()
+        raw_cmd = parts[0][1:]
+        cmd = raw_cmd.split("@", 1)[0].lower() if raw_cmd else ""
+        cmd_args = parts[1:]
+        if cmd in {"voice_alerts_off", "voice_alerts_on", "voice_alerts_status"}:
+            context.args = cmd_args
+            if cmd == "voice_alerts_off":
+                await voice_alerts_off_command(update, context)
+            elif cmd == "voice_alerts_on":
+                await voice_alerts_on_command(update, context)
+            else:
+                await voice_alerts_status_command(update, context)
+            return
+        # Let Telegram CommandHandlers process known commands.
+        # If the client sent slash-text without command entity, avoid routing it to LLM.
+        return
 
     if effective_text.strip().lower().startswith("консилиум"):
         models, prompt, has_colon = parse_consilium_request(effective_text)

@@ -54,6 +54,9 @@ from handlers.commands import (
     voice_msg_conversation_on_command,
     voice_log_debug_off_command,
     voice_log_debug_on_command,
+    voice_alerts_off_command,
+    voice_alerts_on_command,
+    voice_alerts_status_command,
     voice_send_raw_command,
     voice_send_segmented_command,
     say_command,
@@ -80,6 +83,7 @@ BASE_DIR = Path(__file__).resolve().parent
 BOT_CONFIG["TELEGRAM_BOT_TOKEN"] = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_CONFIG["DISCORD_BOT_TOKEN"] = os.getenv("DISCORD_BOT_TOKEN")
 BOT_CONFIG["OPENROUTER_API_KEY"] = os.getenv("OPENROUTER_API_KEY")
+BOT_CONFIG["OPENCLAW_GATEWAY_TOKEN"] = os.getenv("OPENCLAW_GATEWAY_TOKEN")
 BOT_CONFIG["PIAPI_KEY"] = os.getenv("PIAPI_KEY")
 BOT_CONFIG["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 BOT_CONFIG["IMAGE_ROUTER_KEY"] = os.getenv("IMAGE_ROUTER_KEY")
@@ -87,6 +91,28 @@ BOT_CONFIG["CUSTOM_SYSTEM_PROMPT"] = resolve_system_prompt(BASE_DIR)
 BOT_CONFIG["ADMIN_PASS"] = os.getenv("PASS")
 BOT_CONFIG["BOOT_TIME"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 BOT_CONFIG["MINI_APP_URL"] = os.getenv("MINI_APP_URL")
+openclaw_oauth_enabled_env = os.getenv("OPENCLAW_OAUTH_ENABLED")
+if openclaw_oauth_enabled_env is not None:
+    BOT_CONFIG["OPENCLAW_OAUTH_ENABLED"] = (
+        str(openclaw_oauth_enabled_env).strip().lower() in {"1", "true", "yes", "on"}
+    )
+openclaw_base_url_env = os.getenv("OPENCLAW_BASE_URL")
+if openclaw_base_url_env:
+    BOT_CONFIG["OPENCLAW_BASE_URL"] = openclaw_base_url_env.strip()
+openclaw_model_env = os.getenv("OPENCLAW_MODEL")
+if openclaw_model_env:
+    BOT_CONFIG["OPENCLAW_MODEL"] = openclaw_model_env.strip()
+openclaw_timeout_env = os.getenv("OPENCLAW_TIMEOUT_SECONDS")
+if openclaw_timeout_env:
+    try:
+        BOT_CONFIG["OPENCLAW_TIMEOUT_SECONDS"] = max(5, int(openclaw_timeout_env))
+    except ValueError:
+        pass
+openclaw_verify_ssl_env = os.getenv("OPENCLAW_VERIFY_SSL")
+if openclaw_verify_ssl_env is not None:
+    BOT_CONFIG["OPENCLAW_VERIFY_SSL"] = (
+        str(openclaw_verify_ssl_env).strip().lower() in {"1", "true", "yes", "on"}
+    )
 voice_prompt_env = os.getenv("VOICE_TRANSCRIBE_PROMPT")
 if voice_prompt_env is not None:
     BOT_CONFIG["VOICE_TRANSCRIBE_PROMPT"] = voice_prompt_env
@@ -99,6 +125,23 @@ if tts_model_env is not None:
 tts_voice_env = os.getenv("TTS_VOICE")
 if tts_voice_env is not None:
     BOT_CONFIG["TTS_VOICE"] = tts_voice_env
+voice_log_interval_env = os.getenv("VOICE_LOG_INTERVAL_SECONDS")
+if voice_log_interval_env:
+    try:
+        BOT_CONFIG["VOICE_LOG_INTERVAL_SECONDS"] = max(1, int(voice_log_interval_env))
+    except ValueError:
+        pass
+voice_wake_cooldown_env = os.getenv("VOICE_WAKE_COOLDOWN_SECONDS")
+if voice_wake_cooldown_env:
+    try:
+        BOT_CONFIG["VOICE_WAKE_COOLDOWN_SECONDS"] = max(0, int(voice_wake_cooldown_env))
+    except ValueError:
+        pass
+voice_test_allow_bot_audio_env = os.getenv("VOICE_TEST_ALLOW_BOT_AUDIO")
+if voice_test_allow_bot_audio_env is not None:
+    BOT_CONFIG["VOICE_TEST_ALLOW_BOT_AUDIO"] = (
+        str(voice_test_allow_bot_audio_env).strip().lower() in {"1", "true", "yes", "on"}
+    )
 
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")
@@ -318,12 +361,16 @@ async def check_default_model():
 
 async def main() -> None:
     """Основная функция запуска бота."""
-    if not BOT_CONFIG["TELEGRAM_BOT_TOKEN"] or not BOT_CONFIG["OPENROUTER_API_KEY"]:
-        logger.error("Please set TELEGRAM_BOT_TOKEN and OPENROUTER_API_KEY in .env file")
+    has_text_provider = bool(BOT_CONFIG.get("OPENROUTER_API_KEY")) or bool(BOT_CONFIG.get("OPENCLAW_OAUTH_ENABLED"))
+    if not BOT_CONFIG["TELEGRAM_BOT_TOKEN"] or not has_text_provider:
+        logger.error(
+            "Please set TELEGRAM_BOT_TOKEN and one text provider: OPENROUTER_API_KEY or OPENCLAW_OAUTH_ENABLED=1"
+        )
         return
 
-    # Проверяем доступность модели по умолчанию
-    await check_default_model()
+    # В OAuth-режиме через OpenClaw не проверяем модели OpenRouter на старте.
+    if not BOT_CONFIG.get("OPENCLAW_OAUTH_ENABLED"):
+        await check_default_model()
 
     # Создаем приложение с ограничениями для экономии памяти
     update_queue = asyncio.Queue(maxsize=UPDATE_QUEUE_MAXSIZE)
@@ -379,6 +426,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("voice_msg_conversation_off", _command_with_memory(voice_msg_conversation_off_command)))
     application.add_handler(CommandHandler("voice_log_debug_on", _command_with_memory(voice_log_debug_on_command)))
     application.add_handler(CommandHandler("voice_log_debug_off", _command_with_memory(voice_log_debug_off_command)))
+    application.add_handler(CommandHandler("voice_alerts_off", _command_with_memory(voice_alerts_off_command)))
+    application.add_handler(CommandHandler("voice_alerts_on", _command_with_memory(voice_alerts_on_command)))
+    application.add_handler(CommandHandler("voice_alerts_status", _command_with_memory(voice_alerts_status_command)))
     application.add_handler(CommandHandler("voice_send_raw", _command_with_memory(voice_send_raw_command)))
     application.add_handler(CommandHandler("voice_send_segmented", _command_with_memory(voice_send_segmented_command)))
     application.add_handler(CommandHandler("say", _command_with_memory(say_command)))
@@ -393,7 +443,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("show_tg_chats", _command_with_memory(show_tg_chats_command)))
     
     # Обработчик текстовых сообщений
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT, handle_message))
     # Обработчик голосовых сообщений
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice_message))
 

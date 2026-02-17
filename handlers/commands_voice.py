@@ -11,12 +11,16 @@ from telegram.ext import ContextTypes
 from config import BOT_CONFIG
 from handlers.commands_utils import is_admin_user
 from services.memory import (
+    get_discord_voice_channels,
+    get_notification_flows,
     get_tts_voice,
     get_tts_provider,
+    get_voice_presence_notifications_enabled,
     set_tts_provider,
     set_tts_voice,
     set_voice_log_debug,
     set_voice_log_model,
+    set_voice_presence_notifications_enabled,
     set_voice_model,
     set_voice_transcribe_mode,
     set_voice_auto_reply,
@@ -31,6 +35,67 @@ def _get_ffmpeg_path() -> str | None:
         if candidate and os.path.exists(candidate):
             return candidate
     return None
+
+
+def _guild_options_for_chat(chat_id: str) -> dict[str, str]:
+    channels = get_discord_voice_channels()
+    channel_map = {str(item.get("channel_id")): item for item in channels}
+    flows = get_notification_flows()
+    options: dict[str, str] = {}
+    for flow in flows:
+        if str(flow.get("telegram_chat_id")) != str(chat_id):
+            continue
+        channel_info = channel_map.get(str(flow.get("discord_channel_id")))
+        if not channel_info:
+            continue
+        guild_id = str(channel_info.get("guild_id") or "").strip()
+        if not guild_id:
+            continue
+        guild_name = str(channel_info.get("guild_name") or guild_id).strip() or guild_id
+        options[guild_id] = guild_name
+    return options
+
+
+async def _resolve_voice_alerts_guild(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> tuple[str | None, str | None]:
+    message = update.message
+    if not message:
+        return None, None
+
+    args = context.args or []
+    if args:
+        guild_id = args[0].strip()
+        if not guild_id.isdigit():
+            await message.reply_text("Неверный guild_id. Пример: /voice_alerts_off 123456789012345678")
+            return None, None
+        options = _guild_options_for_chat(str(update.effective_chat.id))
+        guild_name = options.get(guild_id)
+        if not guild_name:
+            guild_name = guild_id
+        return guild_id, guild_name
+
+    options = _guild_options_for_chat(str(update.effective_chat.id))
+    if len(options) == 1:
+        guild_id, guild_name = next(iter(options.items()))
+        return guild_id, guild_name
+
+    if not options:
+        await message.reply_text(
+            "Не удалось определить сервер для этого чата.\n"
+            "Укажи guild_id явно: /voice_alerts_off <guild_id>\n"
+            "Список серверов: /show_discord_chats"
+        )
+        return None, None
+
+    lines = [
+        "У этого Telegram-чата несколько серверов. Укажи guild_id:",
+    ]
+    for guild_id, guild_name in sorted(options.items(), key=lambda item: item[1].lower()):
+        lines.append(f"• {guild_name} — {guild_id}")
+    lines.append("Пример: /voice_alerts_off <guild_id>")
+    await message.reply_text("\n".join(lines))
+    return None, None
 
 
 async def _convert_tts_to_ogg(src_path: str) -> tuple[str | None, str | None]:
@@ -180,6 +245,50 @@ async def voice_msg_conversation_off_command(update: Update, context: ContextTyp
     await update.message.reply_text(
         "🔇 Автоответ на голосовые сообщения отключён.\n"
         "Включить: /voice_msg_conversation_on"
+    )
+
+
+async def voice_alerts_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отключает Telegram-оповещения о событиях voice для Discord-сервера."""
+    message = update.message
+    if not message:
+        return
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    if not guild_id:
+        return
+    set_voice_presence_notifications_enabled(guild_id, False)
+    await message.reply_text(
+        f"🔕 Voice-оповещения отключены для сервера: {guild_name} ({guild_id}).\n"
+        f"Включить обратно: /voice_alerts_on {guild_id}"
+    )
+
+
+async def voice_alerts_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает Telegram-оповещения о событиях voice для Discord-сервера."""
+    message = update.message
+    if not message:
+        return
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    if not guild_id:
+        return
+    set_voice_presence_notifications_enabled(guild_id, True)
+    await message.reply_text(
+        f"🔔 Voice-оповещения включены для сервера: {guild_name} ({guild_id})."
+    )
+
+
+async def voice_alerts_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает статус Telegram-оповещений о событиях voice для Discord-сервера."""
+    message = update.message
+    if not message:
+        return
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    if not guild_id:
+        return
+    enabled = get_voice_presence_notifications_enabled(guild_id)
+    status = "включены" if enabled else "отключены"
+    await message.reply_text(
+        f"Статус voice-оповещений для {guild_name} ({guild_id}): {status}."
     )
 
 

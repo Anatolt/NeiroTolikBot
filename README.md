@@ -1,6 +1,6 @@
 # NeiroTolikBot
 
-Telegram и Discord бот с поддержкой генерации текста через OpenRouter и изображений через PiAPI.ai.
+Telegram и Discord бот с поддержкой генерации текста через OpenRouter или OpenClaw OAuth (Codex) и изображений через PiAPI.ai.
 
 ### Основные функции
 - [x] Генерация изображений
@@ -78,6 +78,11 @@ NeiroTolikBot/
    TELEGRAM_BOT_TOKEN=ваш_токен_бота
    DISCORD_BOT_TOKEN=ваш_discord_бот_token
    OPENROUTER_API_KEY=ваш_ключ_openrouter
+   # Альтернатива OpenRouter для текста: OpenClaw OAuth
+   OPENCLAW_OAUTH_ENABLED=1
+   OPENCLAW_BASE_URL=https://de.hohohosting.ru:18789
+   OPENCLAW_GATEWAY_TOKEN=ваш_gateway_token
+   OPENCLAW_MODEL=openclaw:main
    PIAPI_KEY=ваш_ключ_piapi (опционально)
    CUSTOM_SYSTEM_PROMPT=ваш_промпт (опционально)
    # или можно указать файл: CUSTOM_SYSTEM_PROMPT_FILE=neiro-tolik-promt.txt
@@ -171,6 +176,57 @@ sudo systemctl start neirotolikbot.service
 Через переменные окружения можно управлять дополнительными настройками для экономии ресурсов:
 - `UPDATE_QUEUE_MAXSIZE` — максимальный размер очереди обновлений (по умолчанию 50)
 - `MAX_CONCURRENT_UPDATES` — максимальное число одновременно обрабатываемых обновлений (по умолчанию 2)
+
+## Регрессионный тест голоса (Discord)
+
+Для автопроверки STT добавлен отдельный тестовый Discord-бот `voice_test_sender`.
+Он заходит в заданный voice-канал, проигрывает `.wav`-файл и выходит. После этого раннер проверяет свежие записи в `data/memory.db` (`voice_logs`) и печатает `PASS/FAIL`.
+По умолчанию sender запускается локально (через `.venv/bin/python`, если есть), без Docker-сети.
+
+1. Добавьте в `.env`:
+   ```env
+   DISCORD_TEST_BOT_TOKEN=...
+   DISCORD_TEST_GUILD_ID=123456789012345678
+   DISCORD_TEST_CHANNEL_ID=123456789012345678
+   ```
+2. Убедитесь, что локальный `piper` доступен на `http://127.0.0.1:8001/tts` (или передайте `--piper-url`).
+3. Запуск:
+   ```bash
+   ./scripts/run_voice_regression.sh
+   ```
+4. Ручной запуск:
+   ```bash
+   python3 tests/voice/run_voice_regression.py --generate-fixtures
+   ```
+
+Файлы:
+- `tests/voice/cases.json` — сценарии, эталонные фразы, таймауты
+- `tests/voice/generate_fixtures.py` — генерация `.wav` фикстур через локальный piper
+- `tests/voice/run_voice_regression.py` — проигрывание + SQL-проверка результата
+- `tools/voice_test_sender/send_voice.py` — одноразовый плеер в Discord voice
+
+### Talker: бесконечные анекдоты в голосовом
+
+`Talker` может непрерывно озвучивать анекдоты в voice-канале:
+- каждый следующий анекдот новый;
+- при исчерпании базы автоматически генерируются новые;
+- стиль голоса чередуется: `male -> female`.
+
+Запуск:
+```bash
+./scripts/run_talker_jokes.sh
+```
+
+Ограничить количество анекдотов (для прогона):
+```bash
+./scripts/run_talker_jokes.sh --max-jokes 8
+```
+
+Файлы:
+- `tools/voice_test_sender/talker_joker.py` — runtime Talker
+- `tools/voice_test_sender/data/talker_jokes_seed.json` — стартовая база анекдотов
+- `data/talker_jokes_db.json` — рабочая база (автодополняется)
+- `data/talker_jokes_state.json` — позиция в базе
 
 ## Автоматическое обновление из GitHub
 

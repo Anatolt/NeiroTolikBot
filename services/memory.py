@@ -800,6 +800,46 @@ def get_voice_notification_chat_id() -> Optional[str]:
     return result[0] if result else None
 
 
+def set_voice_presence_notifications_enabled(guild_id: str, enabled: bool) -> None:
+    """Включает/отключает Telegram-оповещения о входе/выходе из voice для сервера Discord."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO notification_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (
+            f"voice_presence_notifications_enabled_{guild_id}",
+            "1" if enabled else "0",
+            datetime.now().isoformat(),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_voice_presence_notifications_enabled(guild_id: str) -> bool:
+    """Возвращает статус Telegram-оповещений о входе/выходе из voice для сервера Discord."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT value FROM notification_settings WHERE key = ?",
+        (f"voice_presence_notifications_enabled_{guild_id}",),
+    )
+    result = cursor.fetchone()
+    conn.close()
+
+    if not result:
+        return True
+    return str(result[0]).strip() in {"1", "true", "on", "yes"}
+
+
 def set_voice_model(model: str) -> None:
     """Сохраняет выбранную модель распознавания речи."""
     conn = sqlite3.connect(DB_PATH)

@@ -44,6 +44,9 @@ def build_discord_help_message() -> str:
         "• /say — озвучить текст в голосовом канале\n"
         "• /transcripts_on — включить отправку транскрипций\n"
         "• /transcripts_off — отключить отправку транскрипций\n"
+        "• /voice_alerts_on — включить Telegram-оповещения о voice-событиях\n"
+        "• /voice_alerts_off — отключить Telegram-оповещения о voice-событиях\n"
+        "• /voice_alerts_status — статус voice-оповещений\n"
         "• /summary_now — сделать саммари голосового чата сейчас\n"
         "• /autojoin_on — включить автоподключение к голосу\n"
         "• /autojoin_off — отключить автоподключение к голосу\n\n"
@@ -72,10 +75,11 @@ def format_cost_estimate(cost: float | None) -> str:
 def count_humans_in_voice(
     channel: discord.abc.GuildChannel, exclude_member_id: int | None = None
 ) -> int:
+    include_bots = bool(BOT_CONFIG.get("VOICE_TEST_ALLOW_BOT_AUDIO", False))
     members = getattr(channel, "members", None) or []
     members_count = 0
     for member in members:
-        if member.bot:
+        if member.bot and not include_bots:
             continue
         if exclude_member_id is not None and member.id == exclude_member_id:
             continue
@@ -101,7 +105,7 @@ def count_humans_in_voice(
             if exclude_member_id is not None and member_id == exclude_member_id:
                 continue
             member = guild.get_member(member_id)
-            if member and member.bot:
+            if member and member.bot and not include_bots:
                 continue
             count += 1
         voice_states_count = count
