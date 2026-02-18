@@ -142,6 +142,9 @@ if voice_test_allow_bot_audio_env is not None:
     BOT_CONFIG["VOICE_TEST_ALLOW_BOT_AUDIO"] = (
         str(voice_test_allow_bot_audio_env).strip().lower() in {"1", "true", "yes", "on"}
     )
+voice_receiver_backend_env = os.getenv("VOICE_RECEIVER_BACKEND")
+if voice_receiver_backend_env:
+    BOT_CONFIG["VOICE_RECEIVER_BACKEND"] = voice_receiver_backend_env.strip().lower()
 
 # Необязательная настройка кастомных запасных моделей (через запятую)
 fallback_models_env = os.getenv("FALLBACK_MODELS")

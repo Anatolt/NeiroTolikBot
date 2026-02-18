@@ -59,6 +59,7 @@ class RollingWaveSink(discord.sinks.Sink):
         self._lock = threading.Lock()
         self._bytes_per_second: int | None = None
         self._target_bytes: int | None = None
+        self._packet_counts: dict[object, int] = {}
 
     def init(self, vc):
         self.vc = vc
@@ -122,6 +123,15 @@ class RollingWaveSink(discord.sinks.Sink):
     def write(self, data, user):
         if not self.vc or not self._target_bytes or not self._bytes_per_second:
             return
+        packet_count = self._packet_counts.get(user, 0) + 1
+        self._packet_counts[user] = packet_count
+        if packet_count == 1:
+            logger.info(
+                "Voice sink first packet user=%s bytes=%s channel=%s",
+                getattr(user, "id", user),
+                len(data),
+                getattr(getattr(self, "vc", None), "channel", None).id if getattr(self, "vc", None) and getattr(self.vc, "channel", None) else "unknown",
+            )
         offset = 0
         data_len = len(data)
         while offset < data_len:
@@ -1290,7 +1300,7 @@ async def process_voice_log_sink(
                     username = getattr(fetched, "name", None)
                 except Exception:
                     username = None
-        if member and member.bot:
+        if member and member.bot and not BOT_CONFIG.get("VOICE_TEST_ALLOW_BOT_AUDIO", False):
             continue
 
         tmp_path = None
@@ -1731,6 +1741,12 @@ async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
         if sink:
             pending = sink.pop_chunks()
             if pending:
+                logger.info(
+                    "Voice log pending chunks=%s users_with_packets=%s",
+                    len(pending),
+                    len(getattr(sink, "_packet_counts", {}) or {}),
+                )
+            if pending:
                 asyncio.create_task(
                     _process_voice_log_entries_async(pending, voice_client)
                 )
@@ -1739,6 +1755,8 @@ async def _voice_log_loop(voice_client: discord.VoiceClient) -> None:
 
 def ensure_voice_log_task(voice_client: discord.VoiceClient) -> None:
     if not BOT_CONFIG.get("VOICE_LOG_ENABLED", True):
+        return
+    if str(BOT_CONFIG.get("VOICE_RECEIVER_BACKEND", "pycord")).lower() != "pycord":
         return
     if not voice_client or not voice_client.is_connected():
         return

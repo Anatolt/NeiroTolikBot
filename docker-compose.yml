@@ -14,6 +14,17 @@ services:
 
     command: ["bash", "/app/start-bot.sh"]
 
+  voice_test_sender:
+    build:
+      context: .
+      dockerfile: tools/voice_test_sender/Dockerfile
+    env_file:
+      - .env
+    volumes:
+      - ./tests/voice/fixtures:/fixtures:ro
+    profiles:
+      - tools
+
   whisper:
     build: ./whisper_local
     restart: unless-stopped
@@ -24,11 +35,22 @@ services:
       - WHISPER_CPU_THREADS=4
       - WHISPER_WORKERS=1
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   piper:
     build: ./piper_local
     restart: unless-stopped
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
+  voice_recv_worker:
+    build:
+      context: .
+      dockerfile: tools/voice_recv_worker/Dockerfile
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    profiles:
+      - voice-recv

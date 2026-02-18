@@ -4,6 +4,7 @@ BOT_CONFIG = {
     "TELEGRAM_BOT_TOKEN": None,  # Will be loaded from .env
     "DISCORD_BOT_TOKEN": None,  # Will be loaded from .env
     "OPENROUTER_API_KEY": None,  # Will be loaded from .env
+    "OPENCLAW_GATEWAY_TOKEN": None,  # Will be loaded from .env
     "PIAPI_KEY": None,  # Will be loaded from .env
     "OPENAI_API_KEY": None,  # Will be loaded from .env
     "IMAGE_ROUTER_KEY": None,  # Will be loaded from .env
@@ -15,6 +16,11 @@ BOT_CONFIG = {
     
     # API Settings
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+    "OPENCLAW_OAUTH_ENABLED": False,
+    "OPENCLAW_BASE_URL": "https://de.hohohosting.ru:18789",
+    "OPENCLAW_MODEL": "openclaw:main",
+    "OPENCLAW_TIMEOUT_SECONDS": 120,
+    "OPENCLAW_VERIFY_SSL": True,
     "DEFAULT_MODEL": "deepseek/deepseek-r1-distill-qwen-14b",  # Базовая DeepSeek
     "ROUTER_MODEL": "openai/gpt-4o-mini",  # Легкая модель для сортировки запросов
     "ROUTING_MODE": "rules",  # rules | llm
@@ -75,6 +81,8 @@ BOT_CONFIG = {
     "VOICE_WAKE_MAX_LOGS": 12,
     "VOICE_WAKE_COOLDOWN_SECONDS": 8,
     "VOICE_WAKE_MAX_RESPONSE_CHARS": 300,
+    "VOICE_RECEIVER_BACKEND": "pycord",  # pycord | voice_recv
+    "VOICE_TEST_ALLOW_BOT_AUDIO": False,
     "TTS_MODEL": "gpt-4o-mini-tts",
     "TTS_VOICE": "alloy",
     "TTS_VOICES": [

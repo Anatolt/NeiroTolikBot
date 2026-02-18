@@ -2,23 +2,14 @@ import argparse
 import asyncio
 import contextlib
 import json
-import math
 import os
 import random
-import subprocess
 import tempfile
-import time
 from pathlib import Path
-from typing import Any
 import urllib.request
 
 import discord
 
-
-STYLE_SEQUENCE = [
-    {"name": "male", "semitones": -2.2, "extra_filter": "volume=1.10"},
-    {"name": "female", "semitones": 1.8, "extra_filter": "volume=1.00"},
-]
 
 TOPICS = [
     "код", "сервер", "бот", "релиз", "бэкап", "чат", "дедлайн", "лог", "API", "Wi-Fi",
@@ -141,34 +132,6 @@ class JokeStore:
         )
 
 
-def _pitch_filter(semitones: float) -> str:
-    factor = math.pow(2.0, semitones / 12.0)
-    tempo = 1.0 / factor
-    return f"asetrate=48000*{factor:.6f},aresample=48000,atempo={tempo:.6f}"
-
-
-def _apply_style(input_wav: Path, output_wav: Path, style: dict[str, Any]) -> None:
-    pitch = _pitch_filter(float(style.get("semitones", 0.0)))
-    extra = style.get("extra_filter", "")
-    full_filter = pitch if not extra else f"{pitch},{extra}"
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(input_wav),
-        "-af",
-        f"{full_filter},aresample=48000,apad=pad_dur=0.25",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        str(output_wav),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg style transform failed: {result.stderr.strip()}")
-
-
 def _request_tts(piper_url: str, text: str) -> bytes:
     payload = json.dumps({"text": text}).encode("utf-8")
     req = urllib.request.Request(
@@ -192,9 +155,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--state-file", default="data/talker_jokes_state.json")
     parser.add_argument("--replenish-threshold", type=int, default=5)
     parser.add_argument("--replenish-batch", type=int, default=20)
-    parser.add_argument("--pause-seconds", type=float, default=2.0)
+    parser.add_argument("--pause-seconds", type=float, default=2.8)
     parser.add_argument("--max-jokes", type=int, default=0, help="0 = endless")
-    parser.add_argument("--plain-voice", action="store_true", help="Disable style transform, use raw TTS voice")
     return parser.parse_args()
 
 
@@ -229,20 +191,13 @@ class TalkerJoker(discord.Client):
                     break
 
                 joke, idx = self.store.next()
-                style = STYLE_SEQUENCE[idx % len(STYLE_SEQUENCE)]
                 text = joke
-                print(f"[talker] #{idx+1} style={style['name']} text={joke[:90]}")
+                print(f"[talker] #{idx+1} text={joke[:90]}")
 
                 with tempfile.TemporaryDirectory(prefix="talker_") as tmp_dir:
                     raw_path = Path(tmp_dir) / "raw.wav"
-                    styled_path = Path(tmp_dir) / "styled.wav"
                     raw_path.write_bytes(_request_tts(self.args.piper_url, text))
-                    if self.args.plain_voice:
-                        styled_path.write_bytes(raw_path.read_bytes())
-                    else:
-                        _apply_style(raw_path, styled_path, style)
-
-                    source = await self._build_source(styled_path)
+                    source = await self._build_source(raw_path)
                     await self._play_source(voice, source)
 
                 spoken += 1

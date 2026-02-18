@@ -1,0 +1,23 @@
+[
+  {
+    "id": "wake_check_short",
+    "file": "wake_check_short.wav",
+    "tts_text": "Толик, проверка один два три",
+    "expected_contains": "проверка один два три",
+    "timeout_seconds": 45
+  },
+  {
+    "id": "wake_action_phrase",
+    "file": "wake_action_phrase.wav",
+    "tts_text": "Нейротолик, сделай тест распознавания речи",
+    "expected_contains": "сделай тест распознавания",
+    "timeout_seconds": 45
+  },
+  {
+    "id": "control_phrase",
+    "file": "control_phrase.wav",
+    "tts_text": "Это контрольная фраза для проверки качества",
+    "expected_contains": "контрольная фраза",
+    "timeout_seconds": 45
+  }
+]
