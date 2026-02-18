@@ -13,9 +13,11 @@ from handlers.commands_utils import is_admin_user
 from services.memory import (
     get_discord_voice_channels,
     get_notification_flows,
+    get_voice_chunk_notifications_enabled,
     get_tts_voice,
     get_tts_provider,
     get_voice_presence_notifications_enabled,
+    set_voice_chunk_notifications_enabled,
     set_tts_provider,
     set_tts_voice,
     set_voice_log_debug,
@@ -289,6 +291,50 @@ async def voice_alerts_status_command(update: Update, context: ContextTypes.DEFA
     status = "включены" if enabled else "отключены"
     await message.reply_text(
         f"Статус voice-оповещений для {guild_name} ({guild_id}): {status}."
+    )
+
+
+async def voice_chunks_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отключает отправку voice-чанков в Telegram для Discord-сервера."""
+    message = update.message
+    if not message:
+        return
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    if not guild_id:
+        return
+    set_voice_chunk_notifications_enabled(guild_id, False)
+    await message.reply_text(
+        f"🔕 Отправка voice-чанков отключена для сервера: {guild_name} ({guild_id}).\n"
+        f"Включить обратно: /voice_chunks_on {guild_id}"
+    )
+
+
+async def voice_chunks_on_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Включает отправку voice-чанков в Telegram для Discord-сервера."""
+    message = update.message
+    if not message:
+        return
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    if not guild_id:
+        return
+    set_voice_chunk_notifications_enabled(guild_id, True)
+    await message.reply_text(
+        f"🔔 Отправка voice-чанков включена для сервера: {guild_name} ({guild_id})."
+    )
+
+
+async def voice_chunks_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает статус отправки voice-чанков в Telegram для Discord-сервера."""
+    message = update.message
+    if not message:
+        return
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    if not guild_id:
+        return
+    enabled = get_voice_chunk_notifications_enabled(guild_id)
+    status = "включена" if enabled else "отключена"
+    await message.reply_text(
+        f"Отправка voice-чанков для {guild_name} ({guild_id}): {status}."
     )
 
 

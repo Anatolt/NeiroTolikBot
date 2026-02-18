@@ -120,6 +120,25 @@ def _resolve_telegram_chat_ids(channel_id: int) -> list[str]:
         conn.close()
 
 
+def _voice_chunk_notifications_enabled(guild_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT value FROM notification_settings WHERE key = ?",
+            (f"voice_chunk_notifications_enabled_{guild_id}",),
+        )
+        row = cur.fetchone()
+        if not row:
+            return True
+        return str(row[0] or "").strip().lower() in {"1", "true", "yes", "on"}
+    except sqlite3.Error as exc:
+        print(f"[voice-recv] chunk toggle lookup failed: {exc}")
+        return True
+    finally:
+        conn.close()
+
+
 async def _transcribe(path: Path) -> str:
     data = aiohttp.FormData()
     data.add_field("file", path.read_bytes(), filename=path.name, content_type="audio/wav")
@@ -133,6 +152,8 @@ async def _transcribe(path: Path) -> str:
 
 async def _send_telegram_chunk(path: Path, username: str, user_id: int, transcript: str) -> None:
     if not SEND_TELEGRAM_CHUNKS or not TELEGRAM_TOKEN:
+        return
+    if not _voice_chunk_notifications_enabled(GUILD_ID):
         return
     chat_ids = _resolve_telegram_chat_ids(CHANNEL_ID)
     if not chat_ids:

@@ -8,6 +8,9 @@ from handlers.message_service import MessageProcessingRequest, process_message_r
 from handlers.commands import (
     show_discord_chats_command,
     show_tg_chats_command,
+    voice_chunks_off_command,
+    voice_chunks_on_command,
+    voice_chunks_status_command,
     voice_alerts_off_command,
     voice_alerts_on_command,
     voice_alerts_status_command,
@@ -174,14 +177,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         raw_cmd = parts[0][1:]
         cmd = raw_cmd.split("@", 1)[0].lower() if raw_cmd else ""
         cmd_args = parts[1:]
-        if cmd in {"voice_alerts_off", "voice_alerts_on", "voice_alerts_status"}:
+        if cmd in {
+            "voice_alerts_off",
+            "voice_alerts_on",
+            "voice_alerts_status",
+            "voice_chunks_off",
+            "voice_chunks_on",
+            "voice_chunks_status",
+        }:
             context.args = cmd_args
             if cmd == "voice_alerts_off":
                 await voice_alerts_off_command(update, context)
             elif cmd == "voice_alerts_on":
                 await voice_alerts_on_command(update, context)
-            else:
+            elif cmd == "voice_alerts_status":
                 await voice_alerts_status_command(update, context)
+            elif cmd == "voice_chunks_off":
+                await voice_chunks_off_command(update, context)
+            elif cmd == "voice_chunks_on":
+                await voice_chunks_on_command(update, context)
+            else:
+                await voice_chunks_status_command(update, context)
             return
         # Let Telegram CommandHandlers process known commands.
         # If the client sent slash-text without command entity, avoid routing it to LLM.

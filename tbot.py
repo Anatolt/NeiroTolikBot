@@ -57,6 +57,9 @@ from handlers.commands import (
     voice_alerts_off_command,
     voice_alerts_on_command,
     voice_alerts_status_command,
+    voice_chunks_off_command,
+    voice_chunks_on_command,
+    voice_chunks_status_command,
     voice_send_raw_command,
     voice_send_segmented_command,
     say_command,
@@ -432,6 +435,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("voice_alerts_off", _command_with_memory(voice_alerts_off_command)))
     application.add_handler(CommandHandler("voice_alerts_on", _command_with_memory(voice_alerts_on_command)))
     application.add_handler(CommandHandler("voice_alerts_status", _command_with_memory(voice_alerts_status_command)))
+    application.add_handler(CommandHandler("voice_chunks_off", _command_with_memory(voice_chunks_off_command)))
+    application.add_handler(CommandHandler("voice_chunks_on", _command_with_memory(voice_chunks_on_command)))
+    application.add_handler(CommandHandler("voice_chunks_status", _command_with_memory(voice_chunks_status_command)))
     application.add_handler(CommandHandler("voice_send_raw", _command_with_memory(voice_send_raw_command)))
     application.add_handler(CommandHandler("voice_send_segmented", _command_with_memory(voice_send_segmented_command)))
     application.add_handler(CommandHandler("say", _command_with_memory(say_command)))
