@@ -742,6 +742,98 @@ async def _prepare_messages(
     return messages, guard_info
 
 
+def _openclaw_oauth_enabled() -> bool:
+    return bool(BOT_CONFIG.get("OPENCLAW_OAUTH_ENABLED"))
+
+
+def _build_openresponses_input(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"system", "developer", "user", "assistant"}:
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        items.append(
+            {
+                "type": "message",
+                "role": role,
+                "content": content,
+            }
+        )
+    return items
+
+
+def _extract_openresponses_text(payload: Dict[str, Any]) -> str:
+    output = payload.get("output")
+    if isinstance(output, list):
+        parts: List[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message" or item.get("role") != "assistant":
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "output_text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+        if parts:
+            return "\n".join(parts).strip()
+    raise RuntimeError("OpenClaw response has no assistant output_text")
+
+
+async def _generate_text_via_openclaw(
+    messages: List[Dict[str, str]],
+    requested_model: str | None,
+) -> tuple[str, str, int | None]:
+    base_url = (BOT_CONFIG.get("OPENCLAW_BASE_URL") or "").strip().rstrip("/")
+    token = (BOT_CONFIG.get("OPENCLAW_GATEWAY_TOKEN") or "").strip()
+    if not base_url:
+        raise RuntimeError("OPENCLAW_BASE_URL is not configured")
+    if not token:
+        raise RuntimeError("OPENCLAW_GATEWAY_TOKEN is not configured")
+
+    target_model = requested_model
+    if not target_model or not str(target_model).startswith(("openclaw:", "agent:")):
+        target_model = BOT_CONFIG.get("OPENCLAW_MODEL") or "openclaw:main"
+
+    timeout_seconds = int(BOT_CONFIG.get("OPENCLAW_TIMEOUT_SECONDS") or 120)
+    verify_ssl = bool(BOT_CONFIG.get("OPENCLAW_VERIFY_SSL", True))
+    url = f"{base_url}/v1/responses"
+    input_items = _build_openresponses_input(messages)
+
+    payload = {
+        "model": target_model,
+        "input": input_items,
+        "stream": False,
+        "max_output_tokens": BOT_CONFIG["TEXT_GENERATION"]["MAX_TOKENS"],
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    timeout = aiohttp.ClientTimeout(total=max(5, timeout_seconds))
+    connector = aiohttp.TCPConnector(ssl=False) if not verify_ssl else None
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        async with session.post(url, headers=headers, json=payload) as response:
+            raw = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(f"OpenClaw responses error {response.status}: {raw[:500]}")
+            body = json.loads(raw)
+            text = _extract_openresponses_text(body)
+            usage = body.get("usage") if isinstance(body, dict) else None
+            total_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            return text, str(target_model), total_tokens
+
+
 async def generate_text(
     prompt: str,
     model: str,
@@ -764,8 +856,6 @@ async def generate_text(
         user_id: ID пользователя (опционально)
         search_results: Результаты веб-поиска для добавления в контекст (опционально)
     """
-    client = init_client()
-    
     guard_info = context_info or {}
     if prepared_messages is not None:
         messages = prepared_messages
@@ -778,6 +868,33 @@ async def generate_text(
             search_results,
             include_history=use_context,
         )
+    if _openclaw_oauth_enabled():
+        try:
+            response_text, used_model, total_tokens = await _generate_text_via_openclaw(messages, model)
+            if platform and chat_id and user_id:
+                prompt_for_usage = prompt
+                if not prompt_for_usage and messages:
+                    prompt_for_usage = "\n".join(
+                        msg.get("content", "")
+                        for msg in messages
+                        if isinstance(msg, dict) and msg.get("content")
+                    )
+                log_text_usage(
+                    platform=platform,
+                    chat_id=str(chat_id),
+                    user_id=str(user_id),
+                    model_id=used_model,
+                    prompt=prompt_for_usage or "",
+                    response=response_text,
+                    token_estimate=total_tokens,
+                )
+            return response_text, used_model, guard_info
+        except Exception as e:
+            logger.error(f"Error generating text via OpenClaw OAuth: {str(e)}")
+            failed_model = model or BOT_CONFIG.get("OPENCLAW_MODEL") or "openclaw:main"
+            return f"Произошла ошибка при генерации текста: {str(e)}", failed_model, guard_info
+
+    client = init_client()
     messages = _merge_system_into_user(messages, model)
 
     # Список моделей, которые будем пробовать по очереди

@@ -20,6 +20,22 @@ def _format_money(value: float) -> str:
     return f"${value:.4f}"
 
 
+def _resolve_report_chat_ids() -> list[int]:
+    raw = os.getenv("DAILY_REPORT_CHAT_IDS", "").strip()
+    if raw:
+        chat_ids: list[int] = []
+        for part in raw.split(","):
+            item = part.strip()
+            if not item:
+                continue
+            try:
+                chat_ids.append(int(item))
+            except ValueError:
+                raise SystemExit(f"Invalid DAILY_REPORT_CHAT_IDS value: {item}")
+        if chat_ids:
+            return chat_ids
+
+
 def _build_report_section(title: str, summary: dict) -> str:
     return (
         f"{title}\n"
@@ -34,15 +50,20 @@ def _build_report_section(title: str, summary: dict) -> str:
 
 
 async def main() -> None:
-    load_dotenv()
+    load_dotenv(PROJECT_ROOT / ".env")
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
 
-    admins = get_all_admins()
-    if not admins:
-        raise SystemExit("No admins configured")
+    chat_ids = _resolve_report_chat_ids()
+    if not chat_ids:
+        admins = get_all_admins()
+        if not admins:
+            raise SystemExit("No admins configured")
+        chat_ids = [int(a["chat_id"]) for a in admins if a.get("chat_id")]
+    if not chat_ids:
+        raise SystemExit("No report chat ids configured")
 
     now = datetime.now()
     start = now - timedelta(days=1)
@@ -56,11 +77,8 @@ async def main() -> None:
     text = f"{header}\n\n{telegram_section}\n\n{discord_section}"
 
     bot = Bot(token=token)
-    for admin in admins:
-        chat_id = admin.get("chat_id")
-        if not chat_id:
-            continue
-        await bot.send_message(chat_id=int(chat_id), text=text)
+    for chat_id in chat_ids:
+        await bot.send_message(chat_id=chat_id, text=text)
 
 
 if __name__ == "__main__":
