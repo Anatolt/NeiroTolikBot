@@ -10,6 +10,9 @@ import urllib.request
 
 import discord
 
+JUST_ANOTHER_GUILD_ID = 810599126114762762
+JUST_ANOTHER_CHANNEL_ID = 810599126114762767
+
 
 TOPICS = [
     "код", "сервер", "бот", "релиз", "бэкап", "чат", "дедлайн", "лог", "API", "Wi-Fi",
@@ -147,8 +150,8 @@ def _request_tts(piper_url: str, text: str) -> bytes:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Talker mode: endless joke speaker for Discord voice")
     parser.add_argument("--token", default=os.getenv("DISCORD_TEST_BOT_TOKEN", ""))
-    parser.add_argument("--guild-id", required=True, type=int)
-    parser.add_argument("--channel-id", required=True, type=int)
+    parser.add_argument("--guild-id", type=int, default=JUST_ANOTHER_GUILD_ID)
+    parser.add_argument("--channel-id", type=int, default=JUST_ANOTHER_CHANNEL_ID)
     parser.add_argument("--piper-url", default=os.getenv("TALKER_PIPER_URL", "http://127.0.0.1:8001/tts"))
     parser.add_argument("--seed-file", default="tools/voice_test_sender/data/talker_jokes_seed.json")
     parser.add_argument("--db-file", default="data/talker_jokes_db.json")
@@ -177,12 +180,27 @@ class TalkerJoker(discord.Client):
     async def _run(self) -> None:
         voice = None
         try:
-            guild = self.get_guild(self.args.guild_id) or await self.fetch_guild(self.args.guild_id)
-            channel = guild.get_channel(self.args.channel_id) or await self.fetch_channel(self.args.channel_id)
+            # For debugging consistency keep Talker pinned to Just another server.
+            guild_id = JUST_ANOTHER_GUILD_ID
+            channel_id = JUST_ANOTHER_CHANNEL_ID
+            guild = self.get_guild(guild_id) or await self.fetch_guild(guild_id)
+            channel = guild.get_channel(channel_id) or await self.fetch_channel(channel_id)
             if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
-                raise RuntimeError(f"Channel {self.args.channel_id} is not a voice channel")
+                raise RuntimeError(f"Channel {channel_id} is not a voice channel")
 
-            print(f"[talker] connect -> {channel.id} ({channel.name})")
+            listeners = [
+                member
+                for member in (getattr(channel, "members", None) or [])
+                if not self.user or member.id != self.user.id
+            ]
+            if not listeners:
+                print(
+                    f"[talker] skip connect: no listeners in channel {channel.id} "
+                    f"({channel.name})"
+                )
+                return
+
+            print(f"[talker] connect -> {channel.id} ({channel.name}) in fixed guild {guild_id}")
             voice = await channel.connect()
 
             spoken = 0
