@@ -199,6 +199,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 await voice_chunks_status_command(update, context)
             return
+
+        voice_chunks_prefix = "voice_chunks_"
+        voice_alerts_prefix = "voice_alerts_"
+        if cmd.startswith(voice_chunks_prefix):
+            suffix = cmd[len(voice_chunks_prefix):].strip()
+            if suffix.isdigit():
+                context.args = [suffix]
+                await voice_chunks_status_command(update, context)
+                return
+            await message.reply_text(
+                "Неверный формат команды.\n"
+                "Используйте: /voice_chunks_status <guild_id> или /voice_chunks_status <номер>"
+            )
+            return
+
+        if cmd.startswith(voice_alerts_prefix):
+            suffix = cmd[len(voice_alerts_prefix):].strip()
+            if suffix.isdigit():
+                context.args = [suffix]
+                await voice_alerts_status_command(update, context)
+                return
+            await message.reply_text(
+                "Неверный формат команды.\n"
+                "Используйте: /voice_alerts_status <guild_id> или /voice_alerts_status <номер>"
+            )
+            return
         # Let Telegram CommandHandlers process known commands.
         # If the client sent slash-text without command entity, avoid routing it to LLM.
         return

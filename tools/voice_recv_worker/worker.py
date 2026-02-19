@@ -8,6 +8,7 @@ import wave
 from datetime import datetime
 from pathlib import Path
 import time
+import traceback
 
 import aiohttp
 import discord
@@ -23,6 +24,7 @@ CHANNEL_ID = int(os.getenv("DISCORD_VOICE_RECV_CHANNEL_ID") or os.getenv("DISCOR
 WHISPER_URL = os.getenv("VOICE_LOCAL_WHISPER_URL") or "http://whisper:8000/transcribe"
 CHUNK_SECONDS = float(os.getenv("VOICE_RECV_CHUNK_SECONDS") or "4")
 IDLE_FLUSH_SECONDS = float(os.getenv("VOICE_RECV_IDLE_FLUSH_SECONDS") or "1.4")
+CONNECT_TIMEOUT_SECONDS = float(os.getenv("VOICE_RECV_CONNECT_TIMEOUT_SECONDS") or "25")
 INCLUDE_BOTS = str(os.getenv("VOICE_TEST_ALLOW_BOT_AUDIO") or "").strip().lower() in {"1", "true", "yes", "on"}
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 SEND_TELEGRAM_CHUNKS = str(os.getenv("VOICE_RECV_TELEGRAM_CHUNKS", "1")).strip().lower() in {
@@ -346,15 +348,31 @@ class VoiceRecvWorker(discord.Client):
             if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                 raise RuntimeError(f"Channel {CHANNEL_ID} is not voice/stage")
             print(f"[voice-recv] connect guild={GUILD_ID} channel={CHANNEL_ID}")
-            self.voice = await channel.connect(cls=voice_recv.VoiceRecvClient)
-            with contextlib.suppress(Exception):
+            self.voice = await asyncio.wait_for(
+                channel.connect(
+                    cls=voice_recv.VoiceRecvClient,
+                    self_mute=False,
+                    self_deaf=False,
+                ),
+                timeout=CONNECT_TIMEOUT_SECONDS,
+            )
+            try:
                 await guild.change_voice_state(channel=channel, self_mute=False, self_deaf=False)
+            except Exception as exc:
+                print(f"[voice-recv] change_voice_state warning: {exc}")
+            me = guild.me or await guild.fetch_member(self.user.id)  # type: ignore[arg-type]
+            if me and me.voice:
+                print(
+                    f"[voice-recv] state mute={me.voice.self_mute} deaf={me.voice.self_deaf} "
+                    f"channel={getattr(me.voice.channel, 'id', None)}"
+                )
             sink = voice_recv.BasicSink(self._on_voice, decode=True)
             self.voice.listen(sink)
             while True:
                 await asyncio.sleep(5)
         except Exception as exc:
             print(f"[voice-recv] ERROR: {exc}")
+            print(traceback.format_exc())
         finally:
             for item in self.chunker.flush():
                 await self.queue.put(item)

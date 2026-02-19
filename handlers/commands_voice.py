@@ -59,25 +59,47 @@ def _guild_options_for_chat(chat_id: str) -> dict[str, str]:
 
 
 async def _resolve_voice_alerts_guild(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: Update, context: ContextTypes.DEFAULT_TYPE, command_name: str
 ) -> tuple[str | None, str | None]:
     message = update.message
     if not message:
         return None, None
 
+    options = _guild_options_for_chat(str(update.effective_chat.id))
+    ordered_options = sorted(options.items(), key=lambda item: item[1].lower())
+    all_channels = get_discord_voice_channels()
+    all_guilds: dict[str, str] = {}
+    for item in all_channels:
+        guild_id = str(item.get("guild_id") or "").strip()
+        if not guild_id:
+            continue
+        guild_name = str(item.get("guild_name") or guild_id).strip() or guild_id
+        all_guilds[guild_id] = guild_name
+    ordered_all = sorted(all_guilds.items(), key=lambda item: item[1].lower())
     args = context.args or []
     if args:
-        guild_id = args[0].strip()
-        if not guild_id.isdigit():
-            await message.reply_text("Неверный guild_id. Пример: /voice_alerts_off 123456789012345678")
+        raw_arg = args[0].strip()
+        if not raw_arg.isdigit():
+            await message.reply_text(
+                f"Неверный аргумент. Пример: /{command_name} 123456789012345678 или /{command_name} 1"
+            )
             return None, None
-        options = _guild_options_for_chat(str(update.effective_chat.id))
-        guild_name = options.get(guild_id)
-        if not guild_name:
-            guild_name = guild_id
-        return guild_id, guild_name
 
-    options = _guild_options_for_chat(str(update.effective_chat.id))
+        if raw_arg in all_guilds:
+            return raw_arg, all_guilds[raw_arg]
+
+        index = int(raw_arg)
+        if 1 <= index <= len(ordered_all):
+            guild_id, guild_name = ordered_all[index - 1]
+            return guild_id, guild_name
+
+        await message.reply_text(
+            f"Сервер не найден. Укажи guild_id или номер из списка.\n"
+            f"Пример: /{command_name} 123456789012345678 или /{command_name} 1\n"
+            "Список: /show_discord_chats"
+        )
+        return None, None
+
     if len(options) == 1:
         guild_id, guild_name = next(iter(options.items()))
         return guild_id, guild_name
@@ -91,11 +113,11 @@ async def _resolve_voice_alerts_guild(
         return None, None
 
     lines = [
-        "У этого Telegram-чата несколько серверов. Укажи guild_id:",
+        "У этого Telegram-чата несколько серверов. Укажи guild_id или номер:",
     ]
-    for guild_id, guild_name in sorted(options.items(), key=lambda item: item[1].lower()):
-        lines.append(f"• {guild_name} — {guild_id}")
-    lines.append("Пример: /voice_alerts_off <guild_id>")
+    for idx, (guild_id, guild_name) in enumerate(ordered_options, start=1):
+        lines.append(f"{idx}) {guild_name} — {guild_id}")
+    lines.append(f"Пример: /{command_name} <guild_id> или /{command_name} <номер>")
     await message.reply_text("\n".join(lines))
     return None, None
 
@@ -255,7 +277,7 @@ async def voice_alerts_off_command(update: Update, context: ContextTypes.DEFAULT
     message = update.message
     if not message:
         return
-    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_alerts_off")
     if not guild_id:
         return
     set_voice_presence_notifications_enabled(guild_id, False)
@@ -270,7 +292,7 @@ async def voice_alerts_on_command(update: Update, context: ContextTypes.DEFAULT_
     message = update.message
     if not message:
         return
-    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_alerts_on")
     if not guild_id:
         return
     set_voice_presence_notifications_enabled(guild_id, True)
@@ -284,7 +306,7 @@ async def voice_alerts_status_command(update: Update, context: ContextTypes.DEFA
     message = update.message
     if not message:
         return
-    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_alerts_status")
     if not guild_id:
         return
     enabled = get_voice_presence_notifications_enabled(guild_id)
@@ -299,7 +321,7 @@ async def voice_chunks_off_command(update: Update, context: ContextTypes.DEFAULT
     message = update.message
     if not message:
         return
-    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_chunks_off")
     if not guild_id:
         return
     set_voice_chunk_notifications_enabled(guild_id, False)
@@ -314,7 +336,7 @@ async def voice_chunks_on_command(update: Update, context: ContextTypes.DEFAULT_
     message = update.message
     if not message:
         return
-    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_chunks_on")
     if not guild_id:
         return
     set_voice_chunk_notifications_enabled(guild_id, True)
@@ -328,7 +350,7 @@ async def voice_chunks_status_command(update: Update, context: ContextTypes.DEFA
     message = update.message
     if not message:
         return
-    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context)
+    guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_chunks_status")
     if not guild_id:
         return
     enabled = get_voice_chunk_notifications_enabled(guild_id)

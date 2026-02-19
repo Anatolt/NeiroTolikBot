@@ -49,6 +49,8 @@ services:
       dockerfile: tools/voice_recv_worker/Dockerfile
     env_file:
       - .env
+    environment:
+      - DISCORD_VOICE_RECV_TOKEN=${DISCORD_VOICE_RECV_TOKEN}
     restart: unless-stopped
     volumes:
       - ./data:/app/data

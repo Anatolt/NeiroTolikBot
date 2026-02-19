@@ -77,17 +77,46 @@ def _format_discord_voice_channels() -> str:
     if not channels:
         return "Не нашёл голосовые чаты Discord. Проверь, что Discord-бот запущен."
 
-    grouped: dict[str, list[str]] = {}
-    for channel in channels:
-        guild_name = channel.get("guild_name") or "Без сервера"
-        channel_name = channel.get("channel_name") or channel.get("channel_id")
-        grouped.setdefault(guild_name, []).append(channel_name)
+    grouped: dict[str, list[dict[str, str]]] = {}
+    guilds: dict[str, str] = {}
+    for index, channel in enumerate(channels, start=1):
+        guild_name = str(channel.get("guild_name") or "Без сервера")
+        guild_id = str(channel.get("guild_id") or "").strip() or "unknown"
+        channel_name = str(channel.get("channel_name") or channel.get("channel_id") or "unknown")
+        channel_id = str(channel.get("channel_id") or "").strip() or "unknown"
+        grouped.setdefault(guild_name, []).append(
+            {
+                "index": str(index),
+                "channel_name": channel_name,
+                "channel_id": channel_id,
+            }
+        )
+        guilds[guild_id] = guild_name
 
-    lines = ["🎧 Голосовые чаты Discord:"]
-    for guild_name, channel_names in grouped.items():
+    lines = [
+        "🎧 Голосовые чаты Discord:",
+        "Серверы (рядом команды для быстрого копипаста):",
+    ]
+    ordered_guilds = sorted(guilds.items(), key=lambda item: item[1].lower())
+    for server_index, (guild_id, guild_name) in enumerate(ordered_guilds, start=1):
+        lines.append(f"{server_index}) {guild_name} — guild_id: {guild_id}")
+        lines.append(f"   /voice_chunks_status {guild_id} | /voice_chunks_on {guild_id} | /voice_chunks_off {guild_id}")
+        lines.append(f"   /voice_alerts_status {guild_id} | /voice_alerts_on {guild_id} | /voice_alerts_off {guild_id}")
+
+    for guild_name in sorted(grouped.keys(), key=lambda item: item.lower()):
         lines.append(f"\n{guild_name}:")
-        for name in channel_names:
-            lines.append(f"• {name}")
+        entries = sorted(grouped[guild_name], key=lambda item: item["channel_name"].lower())
+        for entry in entries:
+            lines.append(
+                f"• {entry['channel_name']} (channel_id: {entry['channel_id']}) "
+                f"— /setflow {entry['index']} <буква_чата>"
+            )
+    lines.append(
+        "\nПодсказка: в /voice_chunks_* и /voice_alerts_* можно указывать guild_id или номер сервера из списка."
+    )
+    lines.append(
+        "Быстрый статус тоже поддерживается: /voice_chunks_<guild_id> и /voice_alerts_<guild_id>."
+    )
 
     return "\n".join(lines)
 

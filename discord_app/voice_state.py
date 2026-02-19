@@ -113,6 +113,10 @@ def register_voice_state_handlers(bot: commands.Bot) -> None:
         before: discord.VoiceState,
         after: discord.VoiceState,
     ) -> None:
+        current_bot = get_bot()
+        if current_bot.user and member.id == current_bot.user.id:
+            # Ignore bot's own voice state updates to avoid recursive auto-join loops.
+            return
         if member.bot and not BOT_CONFIG.get("VOICE_TEST_ALLOW_BOT_AUDIO", False):
             return
         if after.channel is not None:
