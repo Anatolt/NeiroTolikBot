@@ -165,7 +165,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 is_reply_to_bot = True
                 logger.info("Message is a reply to bot's message, processing")
         
-        if not bot_mentioned and not is_reply_to_bot:
+        # Allow slash commands in groups even when Telegram client doesn't attach
+        # bot_command entities (otherwise commands can be silently ignored).
+        is_slash_command_text = effective_text.strip().startswith("/")
+        if not bot_mentioned and not is_reply_to_bot and not is_slash_command_text:
             logger.info("Group chat message without bot mention or reply to bot, ignoring")
             return
         
