@@ -14,8 +14,12 @@ from discord_app.notifications import send_telegram_notification
 from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task, generate_voice_summary_for_range
 from services.tts import synthesize_speech
 from services.memory import (
+    get_last_voice_alerts_toggle,
+    get_notification_chat_ids_for_guild,
+    get_telegram_chats,
     get_voice_presence_notifications_enabled,
     get_last_voice_channel,
+    log_voice_alerts_toggle,
     set_discord_autojoin,
     set_discord_autojoin_announce_sent,
     set_last_voice_channel,
@@ -160,19 +164,37 @@ def register_commands(bot: commands.Bot) -> None:
                 await ctx.respond("Сначала зайди в голосовой канал.")
                 return
 
+            await ctx.defer()
+
             channel = voice_state.channel
             voice_client = ctx.guild.voice_client
-            if voice_client and voice_client.is_connected() and voice_client.channel.id == channel.id:
-                await ctx.respond(f"Уже в канале «{channel.name}».")
-                return
-
-            voice_client = await connect_voice_channel(channel)
-            if not voice_client:
-                await ctx.respond("Не удалось подключиться к голосовому каналу.")
-                return
-            ensure_voice_log_task(voice_client)
-            set_last_voice_channel(str(ctx.guild.id), str(channel.id))
-            await ctx.respond(f"Подключился к «{channel.name}».")
+            
+            # Принудительно пробуем отключиться, чтобы сбросить "фантомные" сессии
+            if voice_client:
+                try:
+                    await voice_client.disconnect(force=True)
+                except Exception:
+                    pass
+            
+            try:
+                voice_client = await asyncio.wait_for(connect_voice_channel(channel), timeout=30.0)
+                if not voice_client:
+                    await ctx.followup.send("Не удалось подключиться к голосовому каналу.")
+                    return
+                ensure_voice_log_task(voice_client)
+                set_last_voice_channel(str(ctx.guild.id), str(channel.id))
+                await ctx.followup.send(f"Подключился к «{channel.name}».")
+            except asyncio.TimeoutError:
+                # Проверим, вдруг мы все-таки подключились несмотря на таймаут
+                voice_client = ctx.guild.voice_client
+                if voice_client and voice_client.is_connected() and voice_client.channel.id == channel.id:
+                    ensure_voice_log_task(voice_client)
+                    set_last_voice_channel(str(ctx.guild.id), str(channel.id))
+                    await ctx.followup.send(f"Подключился к «{channel.name}» (с задержкой).")
+                else:
+                    await ctx.followup.send("Таймаут подключения к голосовому каналу.")
+            except Exception as exc:
+                await ctx.followup.send(f"Ошибка: {exc}")
 
     @bot.command(name="leave")
     async def leave_voice_command(ctx: commands.Context) -> None:
@@ -196,16 +218,29 @@ def register_commands(bot: commands.Bot) -> None:
                 await ctx.respond("Команда доступна только на сервере.")
                 return
 
+            await ctx.defer()
+
+            # Пытаемся найти любое голосовое подключение в этой гильдии, даже если бот о нем "забыл"
             voice_client = ctx.guild.voice_client
-            if not voice_client or not voice_client.is_connected():
-                await ctx.respond("Я сейчас не в голосовом канале.")
-                return
-            await voice_client.disconnect()
+            
+            # Силовой метод: пробуем отключить через стандартный voice_client
+            if voice_client:
+                try:
+                    await voice_client.disconnect(force=True)
+                except Exception as e:
+                    logger.warning(f"Failed to disconnect voice_client: {e}")
+
+            # Дополнительный метод: пробуем отправить сигнал отключения напрямую через стейт гильдии
+            try:
+                await ctx.guild.change_voice_state(channel=None)
+            except Exception as e:
+                logger.warning(f"Failed to change voice state to None: {e}")
+
             if ctx.guild:
                 cancel_voice_log_task(ctx.guild.id)
-            if ctx.guild:
                 set_last_voice_channel(str(ctx.guild.id), None)
-            await ctx.respond("Отключился от голосового канала.")
+            
+            await ctx.followup.send("Отключился от голосового канала.")
 
     @bot.command(name="say")
     async def say_voice_command(ctx: commands.Context, *, text: str | None = None) -> None:
@@ -240,34 +275,89 @@ def register_commands(bot: commands.Bot) -> None:
     async def _toggle_voice_alerts(
         ctx: commands.Context | discord.ApplicationContext,
         enabled: bool,
+        command_name: str,
     ) -> None:
         if not ctx.guild:
             await _reply_ctx(ctx, "Команда доступна только на сервере.", False)
             return
-        set_voice_presence_notifications_enabled(str(ctx.guild.id), enabled)
+        guild_id = str(ctx.guild.id)
+        target_chat_ids = get_notification_chat_ids_for_guild(guild_id)
+        if target_chat_ids:
+            for tg_chat_id in target_chat_ids:
+                set_voice_presence_notifications_enabled(guild_id, enabled, tg_chat_id)
+        else:
+            # Fallback for setups without explicit flows.
+            set_voice_presence_notifications_enabled(guild_id, enabled)
+        actor = getattr(ctx, "author", None) or getattr(ctx, "user", None)
+        actor_name = (
+            getattr(actor, "display_name", None)
+            or getattr(actor, "name", None)
+            or str(getattr(actor, "id", "unknown"))
+        )
+        source = "discord_slash_command" if hasattr(ctx, "interaction") else "discord_text_command"
+        channel = getattr(ctx, "channel", None)
+        chat_title = None
+        if channel is not None and getattr(channel, "name", None):
+            chat_title = f"{ctx.guild.name} / #{channel.name}"
+        else:
+            chat_title = str(ctx.guild.name)
+        log_voice_alerts_toggle(
+            guild_id=guild_id,
+            enabled=enabled,
+            actor_platform="discord",
+            actor_chat_id=str(getattr(channel, "id", "")) or None,
+            actor_chat_title=chat_title,
+            actor_user_id=str(getattr(actor, "id", "")) or None,
+            actor_name=actor_name,
+            source=source,
+            command_text=command_name,
+        )
         status = "включены" if enabled else "отключены"
         await _reply_ctx(
             ctx,
-            f"Оповещения о входе/выходе из голосовых каналов {status} для этого сервера.",
+            f"Оповещения о входе/выходе из голосовых каналов {status} для {len(target_chat_ids) if target_chat_ids else 1} Telegram-чат(ов) этого сервера.",
             False,
         )
 
     @bot.command(name="voice_alerts_off")
-    async def voice_alerts_off_command(ctx: commands.Context) -> None:
-        await _toggle_voice_alerts(ctx, False)
+    async def voice_alerts_off_command(ctx: commands.Context, confirm: str | None = None) -> None:
+        if (confirm or "").strip().lower() != "confirm":
+            await _reply_ctx(ctx, "Подтверждение обязательно: /voice_alerts_off confirm", False)
+            return
+        await _toggle_voice_alerts(ctx, False, "/voice_alerts_off confirm")
 
     @bot.command(name="voice_alerts_on")
     async def voice_alerts_on_command(ctx: commands.Context) -> None:
-        await _toggle_voice_alerts(ctx, True)
+        await _toggle_voice_alerts(ctx, True, "/voice_alerts_on")
 
     @bot.command(name="voice_alerts_status")
     async def voice_alerts_status_command(ctx: commands.Context) -> None:
         if not ctx.guild:
             await ctx.send("Команда доступна только на сервере.")
             return
-        enabled = get_voice_presence_notifications_enabled(str(ctx.guild.id))
-        status = "включены" if enabled else "отключены"
-        await ctx.send(f"Оповещения о voice-событиях сейчас {status}.")
+        guild_id = str(ctx.guild.id)
+        chat_ids = get_notification_chat_ids_for_guild(guild_id)
+        chats_map = {str(item.get("chat_id")): item for item in get_telegram_chats()}
+        if not chat_ids:
+            enabled = get_voice_presence_notifications_enabled(guild_id)
+            status = "включены" if enabled else "отключены"
+            lines = [f"Оповещения о voice-событиях сейчас {status} (глобальный режим, без flow-чатов)."]
+        else:
+            lines = ["Статус voice-оповещений по Telegram-чатам:"]
+            for chat_id in chat_ids:
+                enabled = get_voice_presence_notifications_enabled(guild_id, chat_id)
+                status = "включены" if enabled else "отключены"
+                title = (chats_map.get(chat_id) or {}).get("title") or chat_id
+                lines.append(f"• {title} ({chat_id}): {status}")
+        last = get_last_voice_alerts_toggle(guild_id)
+        if last:
+            last_status = "включил" if int(last.get("enabled") or 0) == 1 else "выключил"
+            actor_name = last.get("actor_name") or "unknown"
+            actor_user = last.get("actor_user_id") or "unknown"
+            actor_chat = last.get("actor_chat_title") or last.get("actor_chat_id") or "unknown"
+            ts = last.get("created_at") or "unknown"
+            lines.append(f"Последнее изменение: {last_status} {actor_name} ({actor_user}) в {actor_chat} [{ts}].")
+        await ctx.send("\n".join(lines))
 
     @bot.command(name="transcripts_off")
     async def transcripts_off_command(ctx: commands.Context) -> None:
@@ -289,21 +379,46 @@ def register_commands(bot: commands.Bot) -> None:
             await _toggle_transcripts(ctx, True)
 
         @bot.slash_command(name="voice_alerts_off", description="Отключить voice-оповещения в Telegram")
-        async def voice_alerts_off_slash(ctx: discord.ApplicationContext) -> None:
-            await _toggle_voice_alerts(ctx, False)
+        async def voice_alerts_off_slash(
+            ctx: discord.ApplicationContext, confirm: str | None = None
+        ) -> None:
+            if (confirm or "").strip().lower() != "confirm":
+                await _reply_ctx(ctx, "Передайте confirm, чтобы отключить оповещения.", False)
+                return
+            await _toggle_voice_alerts(ctx, False, "/voice_alerts_off confirm")
 
         @bot.slash_command(name="voice_alerts_on", description="Включить voice-оповещения в Telegram")
         async def voice_alerts_on_slash(ctx: discord.ApplicationContext) -> None:
-            await _toggle_voice_alerts(ctx, True)
+            await _toggle_voice_alerts(ctx, True, "/voice_alerts_on")
 
         @bot.slash_command(name="voice_alerts_status", description="Показать статус voice-оповещений")
         async def voice_alerts_status_slash(ctx: discord.ApplicationContext) -> None:
             if not ctx.guild:
                 await ctx.respond("Команда доступна только на сервере.")
                 return
-            enabled = get_voice_presence_notifications_enabled(str(ctx.guild.id))
-            status = "включены" if enabled else "отключены"
-            await ctx.respond(f"Оповещения о voice-событиях сейчас {status}.")
+            guild_id = str(ctx.guild.id)
+            chat_ids = get_notification_chat_ids_for_guild(guild_id)
+            chats_map = {str(item.get("chat_id")): item for item in get_telegram_chats()}
+            if not chat_ids:
+                enabled = get_voice_presence_notifications_enabled(guild_id)
+                status = "включены" if enabled else "отключены"
+                lines = [f"Оповещения о voice-событиях сейчас {status} (глобальный режим, без flow-чатов)."]
+            else:
+                lines = ["Статус voice-оповещений по Telegram-чатам:"]
+                for chat_id in chat_ids:
+                    enabled = get_voice_presence_notifications_enabled(guild_id, chat_id)
+                    status = "включены" if enabled else "отключены"
+                    title = (chats_map.get(chat_id) or {}).get("title") or chat_id
+                    lines.append(f"• {title} ({chat_id}): {status}")
+            last = get_last_voice_alerts_toggle(guild_id)
+            if last:
+                last_status = "включил" if int(last.get("enabled") or 0) == 1 else "выключил"
+                actor_name = last.get("actor_name") or "unknown"
+                actor_user = last.get("actor_user_id") or "unknown"
+                actor_chat = last.get("actor_chat_title") or last.get("actor_chat_id") or "unknown"
+                ts = last.get("created_at") or "unknown"
+                lines.append(f"Последнее изменение: {last_status} {actor_name} ({actor_user}) в {actor_chat} [{ts}].")
+            await ctx.respond("\n".join(lines))
 
     async def _send_summary_now(
         ctx: commands.Context | discord.ApplicationContext,

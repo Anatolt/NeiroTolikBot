@@ -9,6 +9,7 @@ services:
     cpus: "2.0"
     volumes:
       - ./data:/app/data
+      - .:/app
     ports:
       - "127.0.0.1:8090:8080"
 
@@ -49,10 +50,35 @@ services:
       dockerfile: tools/voice_recv_worker/Dockerfile
     env_file:
       - .env
-    environment:
-      - DISCORD_VOICE_RECV_TOKEN=${DISCORD_VOICE_RECV_TOKEN}
     restart: unless-stopped
     volumes:
       - ./data:/app/data
     profiles:
       - voice-recv
+
+  talker:
+    build: .
+    env_file:
+      - .env
+    restart: "no"
+    volumes:
+      - ./data:/app/data
+    command:
+      - bash
+      - -lc
+      - |
+        TOKEN="${DISCORD_TALKER_TOKEN:-$DISCORD_BOT_TOKEN}"
+        GUILD="${DISCORD_TALKER_GUILD_ID:-$DISCORD_TEST_GUILD_ID}"
+        CHANNEL="${DISCORD_TALKER_CHANNEL_ID:-$DISCORD_TEST_CHANNEL_ID}"
+        PIPER_URL="${TALKER_PIPER_URL:-http://piper:8001/tts}"
+        MAX_JOKES="${TALKER_MAX_JOKES:-0}"
+        PAUSE_SECONDS="${TALKER_PAUSE_SECONDS:-2.8}"
+        exec python tools/voice_test_sender/talker_joker.py \
+          --token "$$TOKEN" \
+          --guild-id "$$GUILD" \
+          --channel-id "$$CHANNEL" \
+          --piper-url "$$PIPER_URL" \
+          --max-jokes "$$MAX_JOKES" \
+          --pause-seconds "$$PAUSE_SECONDS"
+    profiles:
+      - talker
