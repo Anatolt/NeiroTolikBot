@@ -45,7 +45,7 @@ def build_discord_help_message() -> str:
         "• /transcripts_on — включить отправку транскрипций\n"
         "• /transcripts_off — отключить отправку транскрипций\n"
         "• /voice_alerts_on — включить Telegram-оповещения о voice-событиях\n"
-        "• /voice_alerts_off — отключить Telegram-оповещения о voice-событиях\n"
+        "• /voice_alerts_off confirm — отключить Telegram-оповещения о voice-событиях\n"
         "• /voice_alerts_status — статус voice-оповещений\n"
         "• /summary_now — сделать саммари голосового чата сейчас\n"
         "• /autojoin_on — включить автоподключение к голосу\n"

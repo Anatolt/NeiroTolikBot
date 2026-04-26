@@ -188,12 +188,22 @@ class TalkerJoker(discord.Client):
             if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                 raise RuntimeError(f"Channel {channel_id} is not a voice channel")
 
-            listeners = [
-                member
-                for member in (getattr(channel, "members", None) or [])
-                if not self.user or member.id != self.user.id
-            ]
-            if not listeners:
+            listener_ids = await self._collect_listener_ids(guild, channel)
+            if not listener_ids:
+                for attempt in range(1, 7):
+                    await asyncio.sleep(1)
+                    refreshed = guild.get_channel(channel_id) or await self.fetch_channel(channel_id)
+                    if isinstance(refreshed, (discord.VoiceChannel, discord.StageChannel)):
+                        channel = refreshed
+                    listener_ids = await self._collect_listener_ids(guild, channel)
+                    if listener_ids:
+                        break
+                    print(
+                        f"[talker] waiting listeners: attempt {attempt}/6 "
+                        f"channel {channel.id} ({channel.name})"
+                    )
+
+            if not listener_ids:
                 print(
                     f"[talker] skip connect: no listeners in channel {channel.id} "
                     f"({channel.name})"
@@ -229,6 +239,33 @@ class TalkerJoker(discord.Client):
                 with contextlib.suppress(Exception):
                     await voice.disconnect(force=True)
             self._done.set()
+
+    async def _collect_listener_ids(
+        self,
+        guild: discord.Guild,
+        channel: discord.abc.GuildChannel,
+    ) -> set[int]:
+        self_id = self.user.id if self.user else None
+        ids: set[int] = set()
+        for member in (getattr(channel, "members", None) or []):
+            member_id = getattr(member, "id", None)
+            if member_id is not None and member_id != self_id:
+                ids.add(int(member_id))
+        voice_states = getattr(channel, "voice_states", None) or {}
+        for member_id in voice_states.keys():
+            try:
+                value = int(member_id)
+            except (TypeError, ValueError):
+                continue
+            if value != self_id:
+                ids.add(value)
+        if ids:
+            return ids
+
+        me = guild.me
+        if me and me.voice and getattr(me.voice.channel, "id", None) == getattr(channel, "id", None):
+            ids.add(int(me.id))
+        return ids
 
     async def _build_source(self, path: Path):
         # Use PCM so py-cord handles opus encoding itself.

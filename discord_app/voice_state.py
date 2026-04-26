@@ -18,7 +18,6 @@ from discord_app.voice_log import cancel_voice_log_task, ensure_voice_log_task
 from services.memory import (
     get_discord_autojoin,
     get_discord_autojoin_announce_sent,
-    get_voice_presence_notifications_enabled,
     set_discord_autojoin_announce_sent,
     set_last_voice_channel,
 )
@@ -78,8 +77,6 @@ async def _notify_if_voice_empty(channel_id: int, guild_id: int) -> None:
         return
     if channel.type not in (discord.ChannelType.voice, discord.ChannelType.stage_voice):
         return
-    if not get_voice_presence_notifications_enabled(str(guild_id)):
-        return
     humans = [m for m in channel.members if not m.bot]
     if humans:
         return
@@ -89,8 +86,8 @@ async def _notify_if_voice_empty(channel_id: int, guild_id: int) -> None:
         f"🎧 Все вышли из голосового канала «{channel.name}» ({guild_name}). "
         "Уже 5 минут никого нет.\n"
         "Отключить такие оповещения:\n"
-        "• в Discord: /voice_alerts_off\n"
-        f"• в Telegram: /voice_alerts_off {guild_id}"
+        "• в Discord: /voice_alerts_off confirm\n"
+        f"• в Telegram: /voice_alerts_off {guild_id} confirm"
     )
     await send_telegram_notification(notification, discord_channel_id=str(channel.id))
 
@@ -142,17 +139,16 @@ def register_voice_state_handlers(bot: commands.Bot) -> None:
             else:
                 others_part = f"Еще в чате есть {_format_names_ru(others_names)}."
 
-            if get_voice_presence_notifications_enabled(str(channel.guild.id)):
-                guild_id = str(getattr(channel.guild, "id", ""))
-                notification = (
-                    f"🎧 В чат вошёл {member.display_name}: голосовой канал "
-                    f"«{channel.name}» ({guild_name}). "
-                    f"{others_part}\n"
-                    "Отключить такие оповещения:\n"
-                    "• в Discord: /voice_alerts_off\n"
-                    f"• в Telegram: /voice_alerts_off {guild_id}"
-                )
-                await send_telegram_notification(notification, discord_channel_id=str(channel.id))
+            guild_id = str(getattr(channel.guild, "id", ""))
+            notification = (
+                f"🎧 В чат вошёл {member.display_name}: голосовой канал "
+                f"«{channel.name}» ({guild_name}). "
+                f"{others_part}\n"
+                "Отключить такие оповещения:\n"
+                "• в Discord: /voice_alerts_off confirm\n"
+                f"• в Telegram: /voice_alerts_off {guild_id} confirm"
+            )
+            await send_telegram_notification(notification, discord_channel_id=str(channel.id))
 
             if channel.guild and get_discord_autojoin(str(channel.guild.id)):
                 voice_client = channel.guild.voice_client

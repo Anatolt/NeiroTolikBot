@@ -98,7 +98,7 @@ def build_help_text(user_name: str | None = None) -> str:
         f"   /rout — показать текущий режим\n"
         f"🛠 /header_on или /header_off — показать или спрятать техшапку над ответом\n"
         f"🏥 /consilium - Получить ответы от нескольких моделей одновременно\n\n"
-        f"🎧 /voice_alerts_on, /voice_alerts_off, /voice_alerts_status — управление Telegram-алертами по Discord voice\n\n"
+        f"🎧 /voice_alerts_on, /voice_alerts_off <guild_id> confirm, /voice_alerts_status — управление Telegram-алертами по Discord voice (для текущего чата)\n\n"
         f"🧩 /voice_chunks_on, /voice_chunks_off, /voice_chunks_status — управление отправкой voice-чанков в Telegram\n\n"
         f"Также вы можете:\n"
         f"• Задавать вопросы боту\n"

@@ -12,11 +12,13 @@ from config import BOT_CONFIG
 from handlers.commands_utils import is_admin_user
 from services.memory import (
     get_discord_voice_channels,
+    get_last_voice_alerts_toggle,
     get_notification_flows,
     get_voice_chunk_notifications_enabled,
     get_tts_voice,
     get_tts_provider,
     get_voice_presence_notifications_enabled,
+    log_voice_alerts_toggle,
     set_voice_chunk_notifications_enabled,
     set_tts_provider,
     set_tts_voice,
@@ -277,12 +279,38 @@ async def voice_alerts_off_command(update: Update, context: ContextTypes.DEFAULT
     message = update.message
     if not message:
         return
+    if not is_admin_user(update, context):
+        await message.reply_text("Доступ к админ-командам запрещён.")
+        return
     guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_alerts_off")
     if not guild_id:
         return
-    set_voice_presence_notifications_enabled(guild_id, False)
+    chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    args = context.args or []
+    if len(args) < 2 or args[1].strip().lower() != "confirm":
+        await message.reply_text(
+            "Чтобы отключить оповещения, добавьте подтверждение:\n"
+            f"/voice_alerts_off {guild_id} confirm"
+        )
+        return
+    set_voice_presence_notifications_enabled(guild_id, False, chat_id)
+    actor = update.effective_user
+    actor_name = (actor.username if actor and actor.username else None) or (
+        actor.full_name if actor else None
+    )
+    log_voice_alerts_toggle(
+        guild_id=guild_id,
+        enabled=False,
+        actor_platform="telegram",
+        actor_chat_id=chat_id,
+        actor_chat_title=getattr(update.effective_chat, "title", None),
+        actor_user_id=str(actor.id) if actor else None,
+        actor_name=actor_name,
+        source="telegram_command",
+        command_text=message.text,
+    )
     await message.reply_text(
-        f"🔕 Voice-оповещения отключены для сервера: {guild_name} ({guild_id}).\n"
+        f"🔕 Voice-оповещения отключены для этого Telegram-чата на сервере: {guild_name} ({guild_id}).\n"
         f"Включить обратно: /voice_alerts_on {guild_id}"
     )
 
@@ -292,12 +320,31 @@ async def voice_alerts_on_command(update: Update, context: ContextTypes.DEFAULT_
     message = update.message
     if not message:
         return
+    if not is_admin_user(update, context):
+        await message.reply_text("Доступ к админ-командам запрещён.")
+        return
     guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_alerts_on")
     if not guild_id:
         return
-    set_voice_presence_notifications_enabled(guild_id, True)
+    chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    set_voice_presence_notifications_enabled(guild_id, True, chat_id)
+    actor = update.effective_user
+    actor_name = (actor.username if actor and actor.username else None) or (
+        actor.full_name if actor else None
+    )
+    log_voice_alerts_toggle(
+        guild_id=guild_id,
+        enabled=True,
+        actor_platform="telegram",
+        actor_chat_id=chat_id,
+        actor_chat_title=getattr(update.effective_chat, "title", None),
+        actor_user_id=str(actor.id) if actor else None,
+        actor_name=actor_name,
+        source="telegram_command",
+        command_text=message.text,
+    )
     await message.reply_text(
-        f"🔔 Voice-оповещения включены для сервера: {guild_name} ({guild_id})."
+        f"🔔 Voice-оповещения включены для этого Telegram-чата на сервере: {guild_name} ({guild_id})."
     )
 
 
@@ -306,14 +353,27 @@ async def voice_alerts_status_command(update: Update, context: ContextTypes.DEFA
     message = update.message
     if not message:
         return
+    if not is_admin_user(update, context):
+        await message.reply_text("Доступ к админ-командам запрещён.")
+        return
     guild_id, guild_name = await _resolve_voice_alerts_guild(update, context, "voice_alerts_status")
     if not guild_id:
         return
-    enabled = get_voice_presence_notifications_enabled(guild_id)
+    chat_id = str(update.effective_chat.id) if update.effective_chat else None
+    enabled = get_voice_presence_notifications_enabled(guild_id, chat_id)
     status = "включены" if enabled else "отключены"
-    await message.reply_text(
-        f"Статус voice-оповещений для {guild_name} ({guild_id}): {status}."
-    )
+    lines = [f"Статус voice-оповещений для этого Telegram-чата на {guild_name} ({guild_id}): {status}."]
+    last = get_last_voice_alerts_toggle(guild_id, chat_id)
+    if last:
+        last_status = "включил" if int(last.get("enabled") or 0) == 1 else "выключил"
+        actor_name = last.get("actor_name") or "unknown"
+        actor_user = last.get("actor_user_id") or "unknown"
+        actor_chat = last.get("actor_chat_title") or last.get("actor_chat_id") or "unknown"
+        ts = last.get("created_at") or "unknown"
+        lines.append(
+            f"Последнее изменение: {last_status} {actor_name} ({actor_user}) в чате {actor_chat} [{ts}]."
+        )
+    await message.reply_text("\n".join(lines))
 
 
 async def voice_chunks_off_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

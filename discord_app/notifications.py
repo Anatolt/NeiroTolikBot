@@ -1,6 +1,12 @@
 import logging
 
-from services.memory import get_all_admins, get_notification_flows_for_channel, get_voice_notification_chat_id
+from services.memory import (
+    get_all_admins,
+    get_guild_id_for_discord_channel,
+    get_notification_flows_for_channel,
+    get_voice_notification_chat_id,
+    get_voice_presence_notifications_enabled,
+)
 from discord_app.runtime import get_bot, get_telegram_bot
 
 logger = logging.getLogger(__name__)
@@ -26,7 +32,14 @@ async def send_telegram_notification(text: str, discord_channel_id: str | None =
     flow_chat_ids: list[str] = []
     if discord_channel_id:
         flows = get_notification_flows_for_channel(discord_channel_id)
-        flow_chat_ids = [str(flow["telegram_chat_id"]) for flow in flows if flow.get("telegram_chat_id")]
+        guild_id = get_guild_id_for_discord_channel(discord_channel_id)
+        for flow in flows:
+            chat_id = str(flow["telegram_chat_id"]) if flow.get("telegram_chat_id") else ""
+            if not chat_id:
+                continue
+            if guild_id and not get_voice_presence_notifications_enabled(guild_id, chat_id):
+                continue
+            flow_chat_ids.append(chat_id)
         for chat_id in flow_chat_ids:
             await _send(chat_id)
 

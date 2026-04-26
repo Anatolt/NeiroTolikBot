@@ -276,6 +276,62 @@ class VoiceRecvWorker(discord.Client):
         self._flush_task: asyncio.Task | None = None
         self._packet_count = 0
 
+    async def _connect_listen_with_retry(
+        self,
+        guild: discord.Guild,
+        channel: discord.abc.GuildChannel,
+        max_attempts: int = 4,
+    ) -> voice_recv.BasicSink:
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                print(f"[voice-recv] connect attempt {attempt}/{max_attempts}")
+                self.voice = await asyncio.wait_for(
+                    channel.connect(
+                        cls=voice_recv.VoiceRecvClient,
+                        self_mute=False,
+                        self_deaf=False,
+                    ),
+                    timeout=CONNECT_TIMEOUT_SECONDS,
+                )
+                try:
+                    await guild.change_voice_state(channel=channel, self_mute=False, self_deaf=False)
+                except Exception as exc:
+                    print(f"[voice-recv] change_voice_state warning: {exc}")
+
+                ready = False
+                wait_steps = max(8, int(CONNECT_TIMEOUT_SECONDS * 2))
+                for _ in range(wait_steps):
+                    if self.voice and self.voice.is_connected():
+                        ready = True
+                        break
+                    await asyncio.sleep(0.5)
+                if not ready:
+                    raise RuntimeError("voice connection did not become ready")
+
+                me = guild.me or await guild.fetch_member(self.user.id)  # type: ignore[arg-type]
+                if me and me.voice:
+                    print(
+                        f"[voice-recv] state mute={me.voice.self_mute} deaf={me.voice.self_deaf} "
+                        f"channel={getattr(me.voice.channel, 'id', None)}"
+                    )
+
+                sink = voice_recv.BasicSink(self._on_voice, decode=True)
+                self.voice.listen(sink)
+                return sink
+            except Exception as exc:
+                last_error = exc
+                print(f"[voice-recv] listen setup failed attempt {attempt}: {type(exc).__name__} {exc}")
+                if self.voice and self.voice.is_connected():
+                    with contextlib.suppress(Exception):
+                        await self.voice.disconnect(force=True)
+                self.voice = None
+                await asyncio.sleep(min(2 * attempt, 6))
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("failed to setup voice listener")
+
     async def on_ready(self) -> None:
         self._consumer_task = asyncio.create_task(self._consume())
         self._flush_task = asyncio.create_task(self._flush_loop())
@@ -348,26 +404,8 @@ class VoiceRecvWorker(discord.Client):
             if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                 raise RuntimeError(f"Channel {CHANNEL_ID} is not voice/stage")
             print(f"[voice-recv] connect guild={GUILD_ID} channel={CHANNEL_ID}")
-            self.voice = await asyncio.wait_for(
-                channel.connect(
-                    cls=voice_recv.VoiceRecvClient,
-                    self_mute=False,
-                    self_deaf=False,
-                ),
-                timeout=CONNECT_TIMEOUT_SECONDS,
-            )
-            try:
-                await guild.change_voice_state(channel=channel, self_mute=False, self_deaf=False)
-            except Exception as exc:
-                print(f"[voice-recv] change_voice_state warning: {exc}")
-            me = guild.me or await guild.fetch_member(self.user.id)  # type: ignore[arg-type]
-            if me and me.voice:
-                print(
-                    f"[voice-recv] state mute={me.voice.self_mute} deaf={me.voice.self_deaf} "
-                    f"channel={getattr(me.voice.channel, 'id', None)}"
-                )
-            sink = voice_recv.BasicSink(self._on_voice, decode=True)
-            self.voice.listen(sink)
+            self._packet_count = 0
+            await self._connect_listen_with_retry(guild, channel)
             while True:
                 await asyncio.sleep(5)
         except Exception as exc:

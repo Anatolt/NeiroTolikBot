@@ -101,7 +101,9 @@ def _format_discord_voice_channels() -> str:
     for server_index, (guild_id, guild_name) in enumerate(ordered_guilds, start=1):
         lines.append(f"{server_index}) {guild_name} — guild_id: {guild_id}")
         lines.append(f"   /voice_chunks_status {guild_id} | /voice_chunks_on {guild_id} | /voice_chunks_off {guild_id}")
-        lines.append(f"   /voice_alerts_status {guild_id} | /voice_alerts_on {guild_id} | /voice_alerts_off {guild_id}")
+        lines.append(
+            f"   /voice_alerts_status {guild_id} | /voice_alerts_on {guild_id} | /voice_alerts_off {guild_id} confirm"
+        )
 
     for guild_name in sorted(grouped.keys(), key=lambda item: item.lower()):
         lines.append(f"\n{guild_name}:")
@@ -112,7 +114,8 @@ def _format_discord_voice_channels() -> str:
                 f"— /setflow {entry['index']} <буква_чата>"
             )
     lines.append(
-        "\nПодсказка: в /voice_chunks_* и /voice_alerts_* можно указывать guild_id или номер сервера из списка."
+        "\nПодсказка: в /voice_chunks_* и /voice_alerts_* можно указывать guild_id или номер сервера из списка. "
+        "Команды /voice_alerts_* меняют статус только для текущего Telegram-чата."
     )
     lines.append(
         "Быстрый статус тоже поддерживается: /voice_chunks_<guild_id> и /voice_alerts_<guild_id>."

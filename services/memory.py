@@ -92,6 +92,25 @@ def init_db():
     ''')
 
     cursor.execute('''
+    CREATE TABLE IF NOT EXISTS voice_alerts_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        actor_platform TEXT NOT NULL,
+        actor_chat_id TEXT,
+        actor_chat_title TEXT,
+        actor_user_id TEXT,
+        actor_name TEXT,
+        source TEXT NOT NULL,
+        command_text TEXT,
+        created_at DATETIME NOT NULL
+    )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_voice_alerts_audit_guild_created ON voice_alerts_audit(guild_id, created_at)"
+    )
+
+    cursor.execute('''
     CREATE TABLE IF NOT EXISTS discord_join_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         discord_user_id TEXT NOT NULL,
@@ -800,8 +819,19 @@ def get_voice_notification_chat_id() -> Optional[str]:
     return result[0] if result else None
 
 
-def set_voice_presence_notifications_enabled(guild_id: str, enabled: bool) -> None:
-    """Включает/отключает Telegram-оповещения о входе/выходе из voice для сервера Discord."""
+def _voice_presence_notifications_key(guild_id: str, telegram_chat_id: str | None = None) -> str:
+    if telegram_chat_id is None:
+        return f"voice_presence_notifications_enabled_{guild_id}"
+    return f"voice_presence_notifications_enabled_{guild_id}_{telegram_chat_id}"
+
+
+def set_voice_presence_notifications_enabled(
+    guild_id: str, enabled: bool, telegram_chat_id: str | None = None
+) -> None:
+    """Включает/отключает Telegram-оповещения о voice.
+
+    Если передан telegram_chat_id, настройка действует только для этого Telegram-чата.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -813,7 +843,7 @@ def set_voice_presence_notifications_enabled(guild_id: str, enabled: bool) -> No
         DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
         """,
         (
-            f"voice_presence_notifications_enabled_{guild_id}",
+            _voice_presence_notifications_key(guild_id, telegram_chat_id),
             "1" if enabled else "0",
             datetime.now().isoformat(),
         ),
@@ -823,14 +853,27 @@ def set_voice_presence_notifications_enabled(guild_id: str, enabled: bool) -> No
     conn.close()
 
 
-def get_voice_presence_notifications_enabled(guild_id: str) -> bool:
-    """Возвращает статус Telegram-оповещений о входе/выходе из voice для сервера Discord."""
+def get_voice_presence_notifications_enabled(guild_id: str, telegram_chat_id: str | None = None) -> bool:
+    """Возвращает статус Telegram-оповещений о voice.
+
+    Для chat-specific режима (telegram_chat_id задан) отсутствие записи трактуется как включено.
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    if telegram_chat_id is not None:
+        cursor.execute(
+            "SELECT value FROM notification_settings WHERE key = ?",
+            (_voice_presence_notifications_key(guild_id, telegram_chat_id),),
+        )
+        result = cursor.fetchone()
+        conn.close()
+        if not result:
+            return True
+        return str(result[0]).strip() in {"1", "true", "on", "yes"}
 
     cursor.execute(
         "SELECT value FROM notification_settings WHERE key = ?",
-        (f"voice_presence_notifications_enabled_{guild_id}",),
+        (_voice_presence_notifications_key(guild_id),),
     )
     result = cursor.fetchone()
     conn.close()
@@ -838,6 +881,114 @@ def get_voice_presence_notifications_enabled(guild_id: str) -> bool:
     if not result:
         return True
     return str(result[0]).strip() in {"1", "true", "on", "yes"}
+
+
+def log_voice_alerts_toggle(
+    guild_id: str,
+    enabled: bool,
+    actor_platform: str,
+    actor_chat_id: str | None,
+    actor_chat_title: str | None,
+    actor_user_id: str | None,
+    actor_name: str | None,
+    source: str,
+    command_text: str | None = None,
+) -> None:
+    """Логирует факт переключения voice_alerts для последующего анализа аномалий."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO voice_alerts_audit
+        (guild_id, enabled, actor_platform, actor_chat_id, actor_chat_title, actor_user_id, actor_name, source, command_text, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(guild_id),
+            1 if enabled else 0,
+            str(actor_platform or "unknown"),
+            str(actor_chat_id) if actor_chat_id is not None else None,
+            str(actor_chat_title) if actor_chat_title is not None else None,
+            str(actor_user_id) if actor_user_id is not None else None,
+            str(actor_name) if actor_name is not None else None,
+            str(source or "unknown"),
+            str(command_text) if command_text else None,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_last_voice_alerts_toggle(guild_id: str, actor_chat_id: str | None = None) -> Optional[Dict[str, Any]]:
+    """Возвращает последнее переключение voice_alerts.
+
+    При actor_chat_id фильтрует историю для конкретного Telegram-чата.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    if actor_chat_id is not None:
+        cursor.execute(
+            """
+            SELECT id, guild_id, enabled, actor_platform, actor_chat_id, actor_chat_title,
+                   actor_user_id, actor_name, source, command_text, created_at
+            FROM voice_alerts_audit
+            WHERE guild_id = ? AND actor_chat_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (str(guild_id), str(actor_chat_id)),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT id, guild_id, enabled, actor_platform, actor_chat_id, actor_chat_title,
+                   actor_user_id, actor_name, source, command_text, created_at
+            FROM voice_alerts_audit
+            WHERE guild_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (str(guild_id),),
+        )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_guild_id_for_discord_channel(discord_channel_id: str) -> Optional[str]:
+    """Возвращает guild_id для указанного Discord voice channel."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT guild_id FROM discord_voice_channels WHERE channel_id = ?",
+        (str(discord_channel_id),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        return None
+    return str(row[0])
+
+
+def get_notification_chat_ids_for_guild(guild_id: str) -> List[str]:
+    """Возвращает Telegram-чаты, связанные flow'ами с voice-каналами указанного guild."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT DISTINCT nf.telegram_chat_id
+        FROM notification_flows nf
+        JOIN discord_voice_channels dvc ON dvc.channel_id = nf.discord_channel_id
+        WHERE dvc.guild_id = ?
+        ORDER BY nf.telegram_chat_id
+        """,
+        (str(guild_id),),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [str(row[0]) for row in rows if row and row[0] is not None]
 
 
 def set_voice_chunk_notifications_enabled(guild_id: str, enabled: bool) -> None:
