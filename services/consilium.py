@@ -46,8 +46,10 @@ def parse_consilium_request(text: str) -> tuple[List[str], str, bool]:
     remaining = _extract_consilium_remaining(text)
     if remaining is None:
         return [], "", False
+    
     if ":" not in remaining:
-        return [], "", False
+        # Если двоеточия нет, считаем все оставшееся промптом, а модели выберутся автоматически
+        return [], remaining.strip(), True
 
     models_raw, prompt = _split_models_and_prompt(remaining)
 

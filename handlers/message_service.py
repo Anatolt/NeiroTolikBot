@@ -510,19 +510,11 @@ async def execute_routed_request(
         user_id = str(user_id)
 
         models, prompt, has_colon = parse_consilium_request(content)
-        if not has_colon:
-            responses.append(
-                MessageResponse(
-                    text=(
-                        "❗ Для консилиума нужен двоеточие после списка моделей.\n"
-                        "Пример: консилиум gpt, claude: ваш вопрос"
-                    )
-                )
-            )
-            return responses
-
+        
+        # Если роутер предложил модели, используем их
         if suggested_models:
             models = suggested_models
+            prompt = content # В этом случае content и есть промпт
 
         if not models:
             models = await select_default_consilium_models()

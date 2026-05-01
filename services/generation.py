@@ -711,11 +711,16 @@ async def _prepare_messages(
         messages.append({"role": "system", "content": prompt_block})
 
     history: List[Dict[str, Any]] = []
-    if chat_id and user_id and include_history:
-        history = get_history(chat_id, user_id, limit=10)
+    if chat_id and include_history:
+        # Для групповых чатов (где chat_id != user_id) используем общую память чата.
+        # Для личных чатов (chat_id == user_id) используем персональную память.
+        is_private = str(chat_id) == str(user_id)
+        effective_user_id = user_id if is_private else None
+        
+        history = get_history(chat_id, effective_user_id, limit=10)
         history = _normalize_history(history)
 
-        summary = get_user_summary(chat_id, user_id)
+        summary = get_user_summary(chat_id, user_id) if is_private else None # Для групп пока не используем персональные саммари
         if summary:
             messages.append({"role": "system", "content": f"Краткая история нашего общения: {summary}"})
 
